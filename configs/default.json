@@ -17,7 +17,7 @@
   "model": {
     "type": "linearsvc",
     "C": 2.0,
-    "max_iter": 2000,
+    "max_iter": 20000,
     "class_weight": "balanced"
   }
 }
