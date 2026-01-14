@@ -8,65 +8,51 @@ import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import f1_score, classification_report, confusion_matrix
 
+from .config import load_config, parse_overrides
 from .io import read_development
 from .model import build_pipeline
+from .plots import plot_confusion_matrix, plot_folds_macro, plot_per_class_f1
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dev", default="data/raw/development.csv")
-    ap.add_argument("--out_dir", default="reports/cv")
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--k", type=int, default=5)
-
-    ap.add_argument("--max_features", type=int, default=200000)
-    ap.add_argument("--ngram_min", type=int, default=1)
-    ap.add_argument("--ngram_max", type=int, default=2)
-    ap.add_argument("--min_df", type=int, default=2)
-    ap.add_argument("--title_repeat", type=int, default=3)
-
-    ap.add_argument("--model_type", choices=["logreg", "linearsvc"], default="logreg")
-    ap.add_argument("--C", type=float, default=4.0)
-    ap.add_argument("--max_iter", type=int, default=2000)
-    ap.add_argument("--class_weight", default="balanced")  # "balanced" or "none"
+    ap.add_argument("--config", default="configs/default.json")
+    ap.add_argument("--set", action="append", default=[])
     return ap.parse_args()
 
 def main():
     args = parse_args()
-    df = read_development(args.dev)
+    cfg = load_config(args.config, overrides=parse_overrides(args.set))
 
+    df = read_development(cfg.paths.dev_csv)
     X = df.drop(columns=["label"])
     y = df["label"].astype(int).to_numpy()
 
-    cw = None if args.class_weight == "none" else args.class_weight
-
-    skf = StratifiedKFold(n_splits=args.k, shuffle=True, random_state=args.seed)
-
-    out_dir = Path(args.out_dir)
+    skf = StratifiedKFold(n_splits=cfg.cv.k, shuffle=True, random_state=cfg.cv.seed)
+    out_dir = Path(cfg.paths.cv_out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    fold_rows = []
-    per_class_reports = []
-    cm_sum = None
 
     labels_sorted = np.sort(np.unique(y))
 
+    fold_rows = []
+    per_class_rows = []
+    cm_sum = None
+
     for fold, (tr_idx, va_idx) in enumerate(skf.split(X, y), start=1):
-        X_tr = X.iloc[tr_idx]
-        y_tr = y[tr_idx]
-        X_va = X.iloc[va_idx]
-        y_va = y[va_idx]
+        X_tr, y_tr = X.iloc[tr_idx], y[tr_idx]
+        X_va, y_va = X.iloc[va_idx], y[va_idx]
 
         pipe = build_pipeline(
-            max_features=args.max_features,
-            ngram_range=(args.ngram_min, args.ngram_max),
-            min_df=args.min_df,
-            title_repeat=args.title_repeat,
-            model_type=args.model_type,
-            C=args.C,
-            max_iter=args.max_iter,
-            class_weight=cw,
+            max_features=cfg.text.max_features,
+            ngram_range=(cfg.text.ngram_min, cfg.text.ngram_max),
+            min_df=cfg.text.min_df,
+            title_repeat=cfg.text.title_repeat,
+            model_type=cfg.model.type,
+            C=cfg.model.C,
+            max_iter=cfg.model.max_iter,
+            class_weight=cfg.model.class_weight
         )
 
+        print(f"[fold {fold}/{cfg.cv.k}] start fit", flush=True)
         pipe.fit(X_tr, y_tr)
         pred = pipe.predict(X_va)
 
@@ -83,17 +69,15 @@ def main():
             "n_valid": int(len(va_idx)),
         })
 
-        # per-class f1 for this fold
         rep = classification_report(
             y_va, pred,
             labels=labels_sorted.tolist(),
             output_dict=True,
-            zero_division=0,
+            zero_division=0
         )
-        # keep only per-class rows (keys are class labels as strings)
         for lab in labels_sorted:
             k = str(int(lab))
-            per_class_reports.append({
+            per_class_rows.append({
                 "fold": fold,
                 "label": int(lab),
                 "precision": float(rep[k]["precision"]),
@@ -105,48 +89,50 @@ def main():
         cm = confusion_matrix(y_va, pred, labels=labels_sorted)
         cm_sum = cm if cm_sum is None else (cm_sum + cm)
 
-        print(f"[fold {fold}/{args.k}] macro_f1={macro:.5f}")
+        print(f"[fold {fold}/{cfg.cv.k}] macro_f1={macro:.5f}", flush=True)
 
     folds_df = pd.DataFrame(fold_rows).sort_values("fold")
     folds_df.to_csv(out_dir / "folds.csv", index=False)
 
-    per_class_df = pd.DataFrame(per_class_reports)
-    # mean per class across folds (precision/recall/f1)
+    per_class_df = pd.DataFrame(per_class_rows)
     per_class_mean = (
-        per_class_df
-        .groupby("label")[["precision", "recall", "f1"]]
-        .mean()
-        .reset_index()
-        .sort_values("label")
+        per_class_df.groupby("label")[["precision", "recall", "f1"]]
+        .mean().reset_index().sort_values("label")
     )
     per_class_mean.to_csv(out_dir / "per_class_mean.csv", index=False)
 
-    # aggregated confusion matrix
     cm_df = pd.DataFrame(cm_sum, index=labels_sorted, columns=labels_sorted)
     cm_df.index.name = "true"
     cm_df.columns.name = "pred"
     cm_df.to_csv(out_dir / "confusion_matrix.csv")
 
     summary = {
-        "k": int(args.k),
-        "seed": int(args.seed),
-        "model_type": args.model_type,
-        "C": float(args.C),
-        "max_iter": int(args.max_iter),
-        "class_weight": None if cw is None else str(cw),
+        "config": str(args.config),
+        "overrides": args.set,
+        "k": cfg.cv.k,
+        "seed": cfg.cv.seed,
+        "model": {
+            "type": cfg.model.type,
+            "C": cfg.model.C,
+            "max_iter": cfg.model.max_iter,
+            "class_weight": cfg.model.class_weight
+        },
         "text": {
-            "max_features": int(args.max_features),
-            "ngram_range": [int(args.ngram_min), int(args.ngram_max)],
-            "min_df": int(args.min_df),
-            "title_repeat": int(args.title_repeat),
+            "max_features": cfg.text.max_features,
+            "ngram_range": [cfg.text.ngram_min, cfg.text.ngram_max],
+            "min_df": cfg.text.min_df,
+            "title_repeat": cfg.text.title_repeat
         },
         "macro_f1_mean": float(folds_df["macro_f1"].mean()),
-        "macro_f1_std": float(folds_df["macro_f1"].std(ddof=1)) if len(folds_df) > 1 else 0.0,
-        "micro_f1_mean": float(folds_df["micro_f1"].mean()),
-        "weighted_f1_mean": float(folds_df["weighted_f1"].mean()),
+        "macro_f1_std": float(folds_df["macro_f1"].std(ddof=1)) if len(folds_df) > 1 else 0.0
     }
     with open(out_dir / "cv_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+
+    # plots
+    plot_folds_macro(out_dir / "folds.csv", out_dir / "folds_macro_f1.png")
+    plot_per_class_f1(out_dir / "per_class_mean.csv", out_dir / "per_class_f1.png")
+    plot_confusion_matrix(out_dir / "confusion_matrix.csv", out_dir / "confusion_matrix.png")
 
     print("\nCV done.")
     print(f"macro_f1 mean={summary['macro_f1_mean']:.5f} std={summary['macro_f1_std']:.5f}")

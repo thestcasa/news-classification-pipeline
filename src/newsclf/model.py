@@ -11,14 +11,14 @@ from .features import TextJoiner, DatetimeFeaturizer, NumericColumn
 
 def build_pipeline(
     *,
-    max_features: int = 200000,
-    ngram_range: tuple[int, int] = (1, 2),
-    min_df: int = 2,
-    title_repeat: int = 3,
-    model_type: str = "logreg",
-    C: float = 4.0,
-    max_iter: int = 2000,
-    class_weight: str | None = "balanced",
+    max_features: int,
+    ngram_range: tuple[int, int],
+    min_df: int,
+    title_repeat: int,
+    model_type: str,
+    C: float,
+    max_iter: int,
+    class_weight: str | None
 ):
     text_pipe = Pipeline(steps=[
         ("join", TextJoiner(title_repeat=title_repeat)),
@@ -50,7 +50,7 @@ def build_pipeline(
             C=C,
             max_iter=max_iter,
             class_weight=class_weight,
-            n_jobs=-1,
+            n_jobs=-1
         )
     elif model_type == "linearsvc":
         base = LinearSVC(C=C, class_weight=class_weight)
@@ -58,4 +58,4 @@ def build_pipeline(
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
-    return Pipeline(steps=[("pre", pre), ("clf", clf)])
+    return Pipeline([("pre", pre), ("clf", clf)])

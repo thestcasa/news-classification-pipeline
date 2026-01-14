@@ -1,0 +1,5 @@
+STEPS RUN FROM 0
+
+python -m newsclf.train_final --config configs/default.json
+python -m newsclf.predict --config configs/default.json
+python -m newsclf.cv --config configs/default.json

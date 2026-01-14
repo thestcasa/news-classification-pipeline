@@ -1,0 +1,23 @@
+{
+  "paths": {
+    "dev_csv": "data/raw/development.csv",
+    "eval_csv": "data/raw/evaluation.csv",
+    "cv_out_dir": "reports/cv",
+    "model_out": "models/model.pkl",
+    "submission_out": "models/submission.csv"
+  },
+  "cv": { "k": 5, "seed": 42 },
+  "text": {
+    "max_features": 100000,
+    "ngram_min": 1,
+    "ngram_max": 2,
+    "min_df": 3,
+    "title_repeat": 3
+  },
+  "model": {
+    "type": "linearsvc",
+    "C": 2.0,
+    "max_iter": 2000,
+    "class_weight": "balanced"
+  }
+}
