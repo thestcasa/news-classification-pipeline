@@ -42,7 +42,7 @@ class TimestampFeatures(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        ts = pd.to_datetime(X[self.col], errors="coerce", utc=True)
+        ts = pd.to_datetime(X[self.col], errors="coerce", utc=True, format="%Y-%m-%d %H:%M:%S.%f")
 
         year = ts.dt.year.fillna(1970).astype(int).to_numpy()
         month = ts.dt.month.fillna(1).astype(int).to_numpy()
