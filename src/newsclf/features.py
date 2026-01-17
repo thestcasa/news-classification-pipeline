@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 import html as _html
 import unicodedata
 import re
 
-from __future__ import annotations
 from sklearn.base import BaseEstimator, TransformerMixin
 
 _RE_TAGS = re.compile(r"<[^>]+>")
