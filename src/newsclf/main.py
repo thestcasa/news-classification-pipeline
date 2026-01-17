@@ -1,5 +1,5 @@
-# main.py  (place this at your REPO ROOT so you can run:  python main.py ...)
 from __future__ import annotations
+# main.py  (place this at your REPO ROOT so you can run:  python main.py ...)
 
 import argparse
 import json
