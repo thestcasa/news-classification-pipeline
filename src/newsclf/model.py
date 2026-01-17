@@ -1,14 +1,17 @@
 from __future__ import annotations
+from joblib import Memory
 
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.svm import LinearSVC
 
-from .features import TextJoiner, NumericColumn, TimestampFeatures
+from .features import TextCleaner, TextJoiner, NumericColumn, TimestampFeatures
 
+
+import numpy as np
 
 def build_pipeline(
     *,
@@ -20,29 +23,38 @@ def build_pipeline(
     C: float,
     max_iter: int,
     class_weight: str | None,
+    cache_dir: str | None = None,
 ):
+    
+    # PREPROCESSING
     # text -> tfidf
     text_pipe = Pipeline(steps=[
         ("join", TextJoiner(title_repeat=title_repeat)),
+        ("clean", TextCleaner()),
         ("tfidf_union", FeatureUnion(transformer_list=[
             ("word", TfidfVectorizer(
                 max_features=max_features,
                 ngram_range=ngram_range,  # es: (1,2)
                 min_df=min_df,
+                max_df=0.95,
                 strip_accents="unicode",
                 lowercase=True,
                 sublinear_tf=True,
+                dtype=np.float32        # reduces memory pressure
             )),
             ("char", TfidfVectorizer(
                 analyzer="char_wb",
                 ngram_range=(3, 5),  # buon default
                 min_df=3,
+                max_df=0.95,
                 max_features=max(20000, max_features // 4),  # limita costo
                 strip_accents="unicode",
                 lowercase=True,
                 sublinear_tf=True,
+                dtype=np.float32         # reduces memory pressur
             )),
         ])),
+        
     ])
 
     # numeric -> scaler (with_mean=False keeps sparse compatibility)
@@ -67,12 +79,16 @@ def build_pipeline(
         remainder="drop",
     )
 
+
+    # CLASSIFIER
     if model_type == "logreg":
         clf = LogisticRegression(
             C=C,
             max_iter=max_iter,
             class_weight=class_weight,
             n_jobs=-1,
+            solver="saga",
+
         )
     elif model_type == "linearsvc":
         clf = LinearSVC(
@@ -80,7 +96,18 @@ def build_pipeline(
             class_weight=class_weight,
             max_iter=max_iter,
         )
+
+    elif model_type == "ridge":
+        # strong/fast linear baseline for high-dimenisonal sparse text
+        clf = RidgeClassifier(
+            alpha=1.0,
+            class_weight=class_weight,
+        )
+
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
-    return Pipeline(steps=[("pre", pre), ("clf", clf)])
+    # memory cache should make grid-search faster (avoids recomputing transforms)
+    mem = Memory(location=cache_dir, verbose=0) if cache_dir else None
+
+    return Pipeline(steps=[("pre", pre), ("clf", clf)], memory=mem, verbose=True)
