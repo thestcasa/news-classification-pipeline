@@ -59,12 +59,12 @@ class TextJoiner(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        title = X[self.title_col].fillna("").astype(str).to_numpy()
-        article = X[self.article_col].fillna("").astype(str).to_numpy()
+        title = X[self.title_col].fillna("").astype(str)
+        article = X[self.article_col].fillna("").astype(str)
         # Vectorized title emphasis (avoids Python loops)
-        title_rep = np.char.multiply(np.char.add(title, " "), int(self.title_repeat))
-        out = np.char.add(title_rep, article)
-        return out.astype(object)
+        title_rep = (title + " ") * int(self.title_repeat)        
+        out = (title_rep + article).to_numpy(dtype=object)
+        return out
 
 class NumericColumn(BaseEstimator, TransformerMixin):
     
@@ -136,4 +136,4 @@ class TimestampFeatures(BaseEstimator, TransformerMixin):
             hour_sin, hour_cos, dow_sin, dow_cos,
             month_sin, month_cos, doy_sin, doy_cos
         ]).T.astype(np.float32)
-        return np.hstack([is_missing.astype(np.sloat32), out]).astype(np.float32)
+        return np.hstack([is_missing.astype(np.float32), out]).astype(np.float32)
