@@ -50,7 +50,7 @@ class TextCleaner(BaseEstimator, TransformerMixin):
 
 
 class TextJoiner(BaseEstimator, TransformerMixin):
-    def __init__(self, title_col="title", article_col="article", title_repeat: int = 10):
+    def __init__(self, title_col="title", article_col="article", title_repeat: int = 5):
         self.title_col = title_col
         self.article_col = article_col
         self.title_repeat = title_repeat

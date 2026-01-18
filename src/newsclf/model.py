@@ -40,7 +40,6 @@ def build_pipeline(
                 strip_accents="unicode",
                 lowercase=True,
                 sublinear_tf=True,
-                dtype=np.float32        # reduces memory pressure
             )),
             ("char", TfidfVectorizer(
                 analyzer="char_wb",
@@ -51,7 +50,6 @@ def build_pipeline(
                 strip_accents="unicode",
                 lowercase=True,
                 sublinear_tf=True,
-                dtype=np.float32         # reduces memory pressur
             )),
         ])),
         
@@ -86,8 +84,8 @@ def build_pipeline(
             C=C,
             max_iter=max_iter,
             class_weight=class_weight,
-            n_jobs=-1,
-            solver="saga",
+            n_jobs=1,      
+            solver="liblinear",
 
         )
     elif model_type == "linearsvc":
@@ -95,6 +93,7 @@ def build_pipeline(
             C=C,
             class_weight=class_weight,
             max_iter=max_iter,
+            dual=False,
         )
 
     elif model_type == "ridge":
