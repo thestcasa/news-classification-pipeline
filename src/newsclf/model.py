@@ -8,7 +8,14 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.svm import LinearSVC
 
-from .features import TextCleaner, TextJoiner, NumericColumn, TimestampFeatures
+from .features import (
+    TextCleaner,
+    TextJoiner,
+    NumericColumn,
+    TimestampFeatures,
+    TimestampMissingIndicator,
+    MissingIndicator,
+)
 
 
 import numpy as np
@@ -24,12 +31,13 @@ def build_pipeline(
     max_iter: int,
     class_weight: str | None,
     cache_dir: str | None = None,
+    missing_article_token: str | None = "__MISSING_ARTICLE__",
 ):
     
     # PREPROCESSING
     # text -> tfidf
     text_pipe = Pipeline(steps=[
-        ("join", TextJoiner(title_repeat=title_repeat)),
+        ("join", TextJoiner(title_repeat=title_repeat, missing_article_token=missing_article_token)),
         ("clean", TextCleaner()),
         ("tfidf_union", FeatureUnion(transformer_list=[
             ("word", TfidfVectorizer(
@@ -63,7 +71,18 @@ def build_pipeline(
 
     # timestamp -> numeric features + scaler
     time_pipe = Pipeline(steps=[
-        ("time", TimestampFeatures("timestamp")),
+        ("time", TimestampFeatures("timestamp", include_missing=False)),
+        ("scaler", StandardScaler(with_mean=False)),
+    ])
+
+    # timestamp missingness -> binary
+    timestamp_missing_pipe = Pipeline(steps=[
+        ("missing", TimestampMissingIndicator("timestamp")),
+    ])
+
+    # article missingness -> binary + scaler
+    article_missing_pipe = Pipeline(steps=[
+        ("missing", MissingIndicator("article", placeholders=["\\N"])),
         ("scaler", StandardScaler(with_mean=False)),
     ])
 
@@ -73,6 +92,8 @@ def build_pipeline(
             ("source", OneHotEncoder(handle_unknown="ignore"), ["source"]),
             ("page_rank", page_rank_pipe, ["page_rank"]),
             ("time", time_pipe, ["timestamp"]),
+            ("timestamp_missing", timestamp_missing_pipe, ["timestamp"]),
+            ("article_missing", article_missing_pipe, ["article"]),
         ],
         remainder="drop",
     )

@@ -25,7 +25,7 @@ if SRC_DIR.exists():
     sys.path.insert(0, str(SRC_DIR))
 
 from newsclf.config import load_config, parse_overrides  # noqa: E402
-from newsclf.io import read_development, read_evaluation, write_submission  # noqa: E402
+from newsclf.io import read_development, read_evaluation, write_submission, drop_dev_rows_overlapping_eval # noqa: E402
 from newsclf.model import build_pipeline  # noqa: E402
 from newsclf.plots import plot_confusion_matrix, plot_folds_macro, plot_per_class_f1  # noqa: E402
 
@@ -73,12 +73,26 @@ def run_cv(
     _print_header("STAGE 1/2 — Cross-validation on development set")
     t0 = time.perf_counter()
 
-    df = read_development(cfg.paths.dev_csv)
-    X = df.drop(columns=["label"])
-    y = df["label"].astype(int).to_numpy()
+    df_dev = read_development(cfg.paths.dev_csv)
+
+    # ---- detect leakage in dev set and clean it ----
+    eval_df = read_evaluation(cfg.paths.eval_csv)
+    df_dev, leak_report = drop_dev_rows_overlapping_eval(
+        df_dev,
+        eval_df,
+        on=("title", "article"),
+        lowercase=True,
+        strip_accents=True,
+    )
+
+    print("[leakage]", leak_report)
+    # -------------------------------------------------
+
+    X = df_dev.drop(columns=["label"])
+    y = df_dev["label"].astype(int).to_numpy()
 
     print(f"[cv] dev_csv={cfg.paths.dev_csv}")
-    print(f"[cv] n_samples={len(df):,}  n_features_raw={X.shape[1]}")
+    print(f"[cv] n_samples={len(df_dev):,}  n_features_raw={X.shape[1]}")
     print(f"[cv] k={cfg.cv.k} seed={cfg.cv.seed}")
     print(f"[cv] model={cfg.model.type}  C={cfg.model.C}  max_iter={cfg.model.max_iter}  class_weight={cfg.model.class_weight}")
     print(f"[cv] text: max_features={cfg.text.max_features}  ngram=({cfg.text.ngram_min},{cfg.text.ngram_max})  min_df={cfg.text.min_df}  title_repeat={cfg.text.title_repeat}")
@@ -95,12 +109,14 @@ def run_cv(
     fold_rows: list[dict[str, Any]] = []
     per_class_rows: list[dict[str, Any]] = []
     cm_sum: np.ndarray | None = None
+    y_true_all: list[np.ndarray] = []
+    y_pred_all: list[np.ndarray] = []
 
     for fold, (tr_idx, va_idx) in enumerate(skf.split(X, y), start=1):
         fold_t0 = time.perf_counter()
         X_tr, y_tr = X.iloc[tr_idx], y[tr_idx]
         X_va, y_va = X.iloc[va_idx], y[va_idx]
-
+        
         pipe = build_pipeline(
             max_features=cfg.text.max_features,
             ngram_range=(cfg.text.ngram_min, cfg.text.ngram_max),
@@ -114,8 +130,37 @@ def run_cv(
         )
 
         print(f"\n[cv][fold {fold}/{cfg.cv.k}] fit start  (n_train={len(tr_idx):,} n_valid={len(va_idx):,})", flush=True)
-        pipe.fit(X_tr, y_tr)  # Pipeline(verbose=True) will print step timings if enabled in your build_pipeline
-        pred = pipe.predict(X_va)
+
+        # -------------------
+        # DEBUG
+        # -------------------
+        from time import perf_counter
+        from scipy import sparse
+
+        t = perf_counter()
+        pre = pipe.named_steps["pre"]
+        Xtr = pre.fit_transform(X_tr, y_tr)
+        print(f"[debug] pre.fit_transform: {perf_counter()-t:.2f}s")
+
+        print(f"[debug] Xtr shape={Xtr.shape}, nnz={Xtr.nnz:,}, dtype={Xtr.dtype}")
+        print(f"[debug] density={Xtr.nnz/(Xtr.shape[0]*Xtr.shape[1]):.6e}")
+
+        t = perf_counter()
+        pipe.named_steps["clf"].fit(Xtr, y_tr)
+        print(f"[debug] clf.fit: {perf_counter()-t:.2f}s")
+
+        t = perf_counter()
+        Xva = pre.transform(X_va)
+        print(f"[debug] pre.transform(valid): {perf_counter()-t:.2f}s")
+        print(f"[debug] Xva shape={Xva.shape}, nnz={Xva.nnz:,}, dtype={Xva.dtype}")
+        t = perf_counter()
+        pred = pipe.named_steps["clf"].predict(Xva)
+        print(f"[debug] clf.predict: {perf_counter()-t:.2f}s")
+        # -------------------
+
+        # OFF ONLY FOR DEBUG
+        # pipe.fit(X_tr, y_tr)  # Pipeline(verbose=True) will print step timings if enabled in your build_pipeline
+        # pred = pipe.predict(X_va)
 
         macro = f1_score(y_va, pred, average="macro")
         micro = f1_score(y_va, pred, average="micro")
@@ -150,10 +195,13 @@ def run_cv(
 
         cm = confusion_matrix(y_va, pred, labels=labels_sorted)
         cm_sum = cm if cm_sum is None else (cm_sum + cm)
+        y_true_all.append(y_va)
+        y_pred_all.append(pred)
 
         print(f"[cv][fold {fold}/{cfg.cv.k}] macro_f1={macro:.5f}  fold_time={fold_rows[-1]['seconds']:.1f}s", flush=True)
 
-    # --- Save tables
+    # --- Save tables (ensure output dir exists)
+    _ensure_dir(out_dir)
     folds_df = pd.DataFrame(fold_rows).sort_values("fold")
     folds_df.to_csv(out_dir / "folds.csv", index=False)
 
@@ -168,6 +216,24 @@ def run_cv(
     cm_df.index.name = "true"
     cm_df.columns.name = "pred"
     cm_df.to_csv(out_dir / "confusion_matrix.csv")
+
+    # --- OOF true vs predicted counts (across all folds)
+    if y_true_all:
+        y_true_cat = np.concatenate(y_true_all)
+        y_pred_cat = np.concatenate(y_pred_all)
+        true_counts = pd.Series(y_true_cat).value_counts().sort_index()
+        pred_counts = pd.Series(y_pred_cat).value_counts().reindex(true_counts.index, fill_value=0)
+        counts_df = pd.DataFrame(
+            {
+                "label": true_counts.index.astype(int),
+                "true_count": true_counts.values,
+                "pred_count": pred_counts.values,
+            }
+        )
+        counts_df["pred/true"] = counts_df["pred_count"] / counts_df["true_count"].replace(0, np.nan)
+        counts_df.to_csv(out_dir / "oof_true_pred_counts.csv", index=False)
+        print("\n[cv] OOF true vs predicted counts:")
+        print(counts_df.to_string(index=False))
 
     # --- Summary
     summary = {
@@ -206,6 +272,19 @@ def train_and_test(
 
     # --- Train final model
     df_dev = read_development(cfg.paths.dev_csv)
+
+    # ---- detect leakage in dev set and clean it ----
+    df_eval = read_evaluation(cfg.paths.eval_csv)
+    df_dev, leak_report = drop_dev_rows_overlapping_eval(
+        df_dev,
+        df_eval,
+        on=("title", "article"),
+        lowercase=True,
+        strip_accents=True,
+    )
+    print("[leakage]", leak_report)
+    # -------------------------------------------------
+
     X_dev = df_dev.drop(columns=["label"])
     y_dev = df_dev["label"].astype(int).to_numpy()
 
@@ -235,7 +314,6 @@ def train_and_test(
     print(f"[test] saved model to: {model_path}")
 
     # --- Predict evaluation set (no labels by definition)  :contentReference[oaicite:0]{index=0}
-    df_eval = read_evaluation(cfg.paths.eval_csv)
     print(f"[test] predicting evaluation.csv (n={len(df_eval):,})...", flush=True)
     pr_t0 = time.perf_counter()
     pred = pipe.predict(df_eval)
