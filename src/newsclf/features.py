@@ -95,6 +95,22 @@ class TextJoiner(BaseEstimator, TransformerMixin):
         out = out.to_numpy(dtype=object)
         return out
 
+
+class TextColumn(BaseEstimator, TransformerMixin):
+    def __init__(self, col: str, missing_token: str | None = None):
+        self.col = col
+        self.missing_token = missing_token
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        s = X[self.col].fillna("").astype(str)
+        if self.missing_token:
+            s_norm = s.str.strip()
+            s = s.where(~s_norm.isin(["", "\\N"]), other=self.missing_token)
+        return s.to_numpy(dtype=object)
+
 class NumericColumn(BaseEstimator, TransformerMixin):
     
     def __init__(self, col: str):

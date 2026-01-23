@@ -25,7 +25,13 @@ if SRC_DIR.exists():
     sys.path.insert(0, str(SRC_DIR))
 
 from newsclf.config import load_config, parse_overrides  # noqa: E402
-from newsclf.io import read_development, read_evaluation, write_submission, drop_dev_rows_overlapping_eval # noqa: E402
+from newsclf.io import (
+    read_development,
+    read_evaluation,
+    write_submission,
+    drop_dev_rows_overlapping_eval,
+    drop_cross_label_duplicates,
+)  # noqa: E402
 from newsclf.model import build_pipeline  # noqa: E402
 from newsclf.plots import plot_confusion_matrix, plot_folds_macro, plot_per_class_f1  # noqa: E402
 
@@ -86,6 +92,8 @@ def run_cv(
     )
 
     print("[leakage]", leak_report)
+    df_dev, dup_report = drop_cross_label_duplicates(df_dev, on=("title", "article"))
+    print("[dedup]", dup_report)
     # -------------------------------------------------
 
     X = df_dev.drop(columns=["label"])
@@ -95,7 +103,12 @@ def run_cv(
     print(f"[cv] n_samples={len(df_dev):,}  n_features_raw={X.shape[1]}")
     print(f"[cv] k={cfg.cv.k} seed={cfg.cv.seed}")
     print(f"[cv] model={cfg.model.type}  C={cfg.model.C}  max_iter={cfg.model.max_iter}  class_weight={cfg.model.class_weight}")
-    print(f"[cv] text: max_features={cfg.text.max_features}  ngram=({cfg.text.ngram_min},{cfg.text.ngram_max})  min_df={cfg.text.min_df}  title_repeat={cfg.text.title_repeat}")
+    print(
+        f"[cv] text: max_features={cfg.text.max_features}  ngram=({cfg.text.ngram_min},{cfg.text.ngram_max})  "
+        f"min_df={cfg.text.min_df}  title_repeat={cfg.text.title_repeat}  "
+        f"title_char={cfg.text.title_char}  title_char_ngram=({cfg.text.title_char_ngram_min},{cfg.text.title_char_ngram_max})  "
+        f"title_char_min_df={cfg.text.title_char_min_df}  title_char_max_features={cfg.text.title_char_max_features}"
+    )
 
     lab_df = _summarize_labels(y)
     print("\n[cv] label distribution:")
@@ -122,6 +135,11 @@ def run_cv(
             ngram_range=(cfg.text.ngram_min, cfg.text.ngram_max),
             min_df=cfg.text.min_df,
             title_repeat=cfg.text.title_repeat,
+            title_char=cfg.text.title_char,
+            title_char_ngram_min=cfg.text.title_char_ngram_min,
+            title_char_ngram_max=cfg.text.title_char_ngram_max,
+            title_char_min_df=cfg.text.title_char_min_df,
+            title_char_max_features=cfg.text.title_char_max_features,
             model_type=cfg.model.type,
             C=cfg.model.C,
             max_iter=cfg.model.max_iter,
@@ -283,6 +301,8 @@ def train_and_test(
         strip_accents=True,
     )
     print("[leakage]", leak_report)
+    df_dev, dup_report = drop_cross_label_duplicates(df_dev, on=("title", "article"))
+    print("[dedup]", dup_report)
     # -------------------------------------------------
 
     X_dev = df_dev.drop(columns=["label"])
@@ -293,6 +313,11 @@ def train_and_test(
         ngram_range=(cfg.text.ngram_min, cfg.text.ngram_max),
         min_df=cfg.text.min_df,
         title_repeat=cfg.text.title_repeat,
+        title_char=cfg.text.title_char,
+        title_char_ngram_min=cfg.text.title_char_ngram_min,
+        title_char_ngram_max=cfg.text.title_char_ngram_max,
+        title_char_min_df=cfg.text.title_char_min_df,
+        title_char_max_features=cfg.text.title_char_max_features,
         model_type=cfg.model.type,
         C=cfg.model.C,
         max_iter=cfg.model.max_iter,

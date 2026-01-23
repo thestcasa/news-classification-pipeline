@@ -11,6 +11,7 @@ from sklearn.svm import LinearSVC
 from .features import (
     TextCleaner,
     TextJoiner,
+    TextColumn,
     NumericColumn,
     TimestampFeatures,
     TimestampMissingIndicator,
@@ -26,6 +27,11 @@ def build_pipeline(
     ngram_range: tuple[int, int],
     min_df: int,
     title_repeat: int,
+    title_char: bool = False,
+    title_char_ngram_min: int = 2,
+    title_char_ngram_max: int = 4,
+    title_char_min_df: int = 5,
+    title_char_max_features: int = 20000,
     model_type: str,
     C: float,
     max_iter: int,
@@ -63,6 +69,23 @@ def build_pipeline(
         
     ])
 
+    title_char_pipe = None
+    if title_char:
+        title_char_pipe = Pipeline(steps=[
+            ("col", TextColumn("title")),
+            ("clean", TextCleaner()),
+            ("tfidf", TfidfVectorizer(
+                analyzer="char_wb",
+                ngram_range=(int(title_char_ngram_min), int(title_char_ngram_max)),
+                min_df=int(title_char_min_df),
+                max_df=0.95,
+                max_features=int(title_char_max_features),
+                strip_accents="unicode",
+                lowercase=True,
+                sublinear_tf=True,
+            )),
+        ])
+
     # numeric -> scaler (with_mean=False keeps sparse compatibility)
     page_rank_pipe = Pipeline(steps=[
         ("num", NumericColumn("page_rank")),
@@ -86,15 +109,21 @@ def build_pipeline(
         ("scaler", StandardScaler(with_mean=False)),
     ])
 
+    transformers = [
+        ("text", text_pipe, ["title", "article"]),
+    ]
+    if title_char_pipe is not None:
+        transformers.append(("title_char", title_char_pipe, ["title"]))
+    transformers += [
+        ("source", OneHotEncoder(handle_unknown="ignore"), ["source"]),
+        ("page_rank", page_rank_pipe, ["page_rank"]),
+        ("time", time_pipe, ["timestamp"]),
+        ("timestamp_missing", timestamp_missing_pipe, ["timestamp"]),
+        ("article_missing", article_missing_pipe, ["article"]),
+    ]
+
     pre = ColumnTransformer(
-        transformers=[
-            ("text", text_pipe, ["title", "article"]),
-            ("source", OneHotEncoder(handle_unknown="ignore"), ["source"]),
-            ("page_rank", page_rank_pipe, ["page_rank"]),
-            ("time", time_pipe, ["timestamp"]),
-            ("timestamp_missing", timestamp_missing_pipe, ["timestamp"]),
-            ("article_missing", article_missing_pipe, ["article"]),
-        ],
+        transformers=transformers,
         remainder="drop",
     )
 

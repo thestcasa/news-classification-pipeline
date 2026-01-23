@@ -156,3 +156,81 @@ def drop_dev_rows_overlapping_eval(
         "pct_removed_from_dev": 100.0 * removed / max(1, len(dev_df)),
     }
     return out, report
+
+
+def drop_cross_label_duplicates(
+    dev_df: pd.DataFrame,
+    *,
+    on: tuple[str, str] = ("title", "article"),
+    url_token: str = " __URL__ ",
+    lowercase: bool = True,
+    strip_accents: bool = True,
+    placeholders: tuple[str, ...] = ("\\N",),
+    drop_same_label_dups: bool = False,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Remove rows where the same (on[0], on[1]) content appears with multiple labels.
+    Optionally drop same-label duplicates (keep first).
+    Uses canonicalization similar to the modeling pipeline to reduce false mismatches.
+    """
+    if "label" not in dev_df.columns:
+        raise ValueError("dev_df must include a 'label' column for duplicate checks.")
+
+    c1, c2 = on
+    for c in (c1, c2):
+        if c not in dev_df.columns:
+            raise ValueError(f"dev_df missing column '{c}'")
+
+    dev_c1 = _canon_text_series(
+        dev_df[c1],
+        url_token=url_token,
+        lowercase=lowercase,
+        strip_accents=strip_accents,
+        placeholders=placeholders,
+    )
+    dev_c2 = _canon_text_series(
+        dev_df[c2],
+        url_token=url_token,
+        lowercase=lowercase,
+        strip_accents=strip_accents,
+        placeholders=placeholders,
+    )
+    key = pd.util.hash_pandas_object(pd.DataFrame({c1: dev_c1, c2: dev_c2}), index=False).to_numpy(np.uint64)
+    key = pd.Series(key, index=dev_df.index, name="_dup_key")
+
+    tmp = pd.DataFrame({"label": dev_df["label"].astype(str), "key": key})
+    grp = tmp.groupby("key")["label"].agg(nunique="nunique", size="size")
+    dup_groups = grp[grp["size"] > 1]
+    cross_groups = dup_groups[dup_groups["nunique"] > 1]
+    same_groups = dup_groups[dup_groups["nunique"] == 1]
+
+    cross_mask = key.isin(cross_groups.index)
+    keep_mask = ~cross_mask
+    dropped_cross = int(cross_mask.sum())
+
+    dropped_same = 0
+    if drop_same_label_dups:
+        remaining_keys = key.loc[keep_mask]
+        dup_keep = ~remaining_keys.duplicated(keep="first")
+        dropped_same = int((~dup_keep).sum())
+        keep_mask.loc[remaining_keys.index] = dup_keep
+
+    out = dev_df.loc[keep_mask].copy()
+
+    report = {
+        "on": on,
+        "lowercase": lowercase,
+        "strip_accents": strip_accents,
+        "url_token": url_token,
+        "n_dev_before": int(len(dev_df)),
+        "n_dev_after": int(len(out)),
+        "dup_groups": int(len(dup_groups)),
+        "cross_label_groups": int(len(cross_groups)),
+        "cross_label_rows": int(cross_groups["size"].sum()) if len(cross_groups) else 0,
+        "same_label_groups": int(len(same_groups)),
+        "same_label_rows": int(same_groups["size"].sum()) if len(same_groups) else 0,
+        "rows_removed_cross_label": dropped_cross,
+        "rows_removed_same_label": dropped_same,
+        "pct_removed_from_dev": 100.0 * (len(dev_df) - len(out)) / max(1, len(dev_df)),
+    }
+    return out, report

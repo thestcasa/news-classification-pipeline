@@ -24,6 +24,11 @@ class Text:
     ngram_max: int
     min_df: int
     title_repeat: int
+    title_char: bool = False
+    title_char_ngram_min: int = 2
+    title_char_ngram_max: int = 4
+    title_char_min_df: int = 5
+    title_char_max_features: int = 20000
 
 @dataclass(frozen=True)
 class Model:
@@ -63,8 +68,11 @@ def parse_overrides(pairs: list[str]) -> dict[str, Any]:
         section, key = lhs.split(".", 1)
 
         r = rhs.strip()
-        if r.lower() in ("none", "null"):
+        r_low = r.lower()
+        if r_low in ("none", "null"):
             val: Any = None
+        elif r_low in ("true", "false"):
+            val = r_low == "true"
         else:
             try:
                 if r.isdigit() or (r.startswith("-") and r[1:].isdigit()):
