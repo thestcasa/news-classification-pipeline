@@ -36,6 +36,16 @@ class Model:
     C: float
     max_iter: int
     class_weight: str | None  # "balanced" or None
+    class_weight_power: float = 1.0
+
+@dataclass(frozen=True)
+class Source:
+    min_count: int | None = 5
+    min_frac: float | None = None
+
+@dataclass(frozen=True)
+class Dedup:
+    drop_same_label: bool = False
 
 @dataclass(frozen=True)
 class Config:
@@ -43,6 +53,8 @@ class Config:
     cv: CV
     text: Text
     model: Model
+    source: Source
+    dedup: Dedup
 
 def _deep_update(base: dict[str, Any], upd: dict[str, Any]) -> dict[str, Any]:
     out = dict(base)
@@ -104,5 +116,8 @@ def load_config(path: str | Path, *, overrides: dict[str, Any] | None = None) ->
             C=float(cfg["model"]["C"]),
             max_iter=int(cfg["model"].get("max_iter", 2000)),
             class_weight=cw_norm,
-        )
+            class_weight_power=float(cfg["model"].get("class_weight_power", 1.0)),
+        ),
+        source=Source(**cfg.get("source", {})),
+        dedup=Dedup(**cfg.get("dedup", {})),
     )

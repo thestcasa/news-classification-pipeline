@@ -11,7 +11,10 @@ from sklearn.svm import LinearSVC
 from .features import (
     TextCleaner,
     TextJoiner,
+    AdPrefixStripper,
     TextColumn,
+    TextPatternFeatures,
+    SourceBinner,
     NumericColumn,
     TimestampFeatures,
     TimestampMissingIndicator,
@@ -20,6 +23,16 @@ from .features import (
 
 
 import numpy as np
+
+def compute_balanced_class_weight(y: np.ndarray, power: float = 1.0) -> dict[int, float]:
+    y = np.asarray(y)
+    classes, counts = np.unique(y, return_counts=True)
+    n_samples = float(len(y))
+    n_classes = float(len(classes))
+    weights = n_samples / (n_classes * counts.astype(float))
+    if power != 1.0:
+        weights = np.power(weights, float(power))
+    return {int(c): float(w) for c, w in zip(classes, weights)}
 
 def build_pipeline(
     *,
@@ -32,6 +45,8 @@ def build_pipeline(
     title_char_ngram_max: int = 4,
     title_char_min_df: int = 5,
     title_char_max_features: int = 20000,
+    source_min_count: int | None = 5,
+    source_min_frac: float | None = None,
     model_type: str,
     C: float,
     max_iter: int,
@@ -43,6 +58,7 @@ def build_pipeline(
     # PREPROCESSING
     # text -> tfidf
     text_pipe = Pipeline(steps=[
+        ("ad_strip", AdPrefixStripper()),
         ("join", TextJoiner(title_repeat=title_repeat, missing_article_token=missing_article_token)),
         ("clean", TextCleaner()),
         ("tfidf_union", FeatureUnion(transformer_list=[
@@ -69,6 +85,10 @@ def build_pipeline(
         
     ])
 
+    text_meta_pipe = Pipeline(steps=[
+        ("meta", TextPatternFeatures()),
+        ("scaler", StandardScaler(with_mean=False)),
+    ])
     title_char_pipe = None
     if title_char:
         title_char_pipe = Pipeline(steps=[
@@ -109,13 +129,23 @@ def build_pipeline(
         ("scaler", StandardScaler(with_mean=False)),
     ])
 
+    source_pipe = Pipeline(steps=[
+        ("bucket", SourceBinner(
+            col="source",
+            min_count=source_min_count,
+            min_frac=source_min_frac,
+        )),
+        ("onehot", OneHotEncoder(handle_unknown="ignore")),
+    ])
+
     transformers = [
         ("text", text_pipe, ["title", "article"]),
     ]
     if title_char_pipe is not None:
         transformers.append(("title_char", title_char_pipe, ["title"]))
     transformers += [
-        ("source", OneHotEncoder(handle_unknown="ignore"), ["source"]),
+        ("text_meta", text_meta_pipe, ["title", "article"]),
+        ("source", source_pipe, ["source"]),
         ("page_rank", page_rank_pipe, ["page_rank"]),
         ("time", time_pipe, ["timestamp"]),
         ("timestamp_missing", timestamp_missing_pipe, ["timestamp"]),

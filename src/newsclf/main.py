@@ -32,7 +32,7 @@ from newsclf.io import (
     drop_dev_rows_overlapping_eval,
     drop_cross_label_duplicates,
 )  # noqa: E402
-from newsclf.model import build_pipeline  # noqa: E402
+from newsclf.model import build_pipeline, compute_balanced_class_weight  # noqa: E402
 from newsclf.plots import plot_confusion_matrix, plot_folds_macro, plot_per_class_f1  # noqa: E402
 
 
@@ -70,6 +70,18 @@ def _summarize_labels(y: np.ndarray) -> pd.DataFrame:
     return out
 
 
+def _resolve_class_weight(cfg, y: np.ndarray):
+    cw = cfg.model.class_weight
+    if cw is None:
+        return None
+    if cw != "balanced":
+        return cw
+    power = float(cfg.model.class_weight_power)
+    if power == 1.0:
+        return "balanced"
+    return compute_balanced_class_weight(y, power=power)
+
+
 def run_cv(
     *,
     cfg,
@@ -102,7 +114,11 @@ def run_cv(
     print(f"[cv] dev_csv={cfg.paths.dev_csv}")
     print(f"[cv] n_samples={len(df_dev):,}  n_features_raw={X.shape[1]}")
     print(f"[cv] k={cfg.cv.k} seed={cfg.cv.seed}")
-    print(f"[cv] model={cfg.model.type}  C={cfg.model.C}  max_iter={cfg.model.max_iter}  class_weight={cfg.model.class_weight}")
+    print(
+        f"[cv] model={cfg.model.type}  C={cfg.model.C}  max_iter={cfg.model.max_iter}  "
+        f"class_weight={cfg.model.class_weight}  class_weight_power={cfg.model.class_weight_power}"
+    )
+    print(f"[cv] source: min_count={cfg.source.min_count}  min_frac={cfg.source.min_frac}")
     print(
         f"[cv] text: max_features={cfg.text.max_features}  ngram=({cfg.text.ngram_min},{cfg.text.ngram_max})  "
         f"min_df={cfg.text.min_df}  title_repeat={cfg.text.title_repeat}  "
@@ -129,6 +145,7 @@ def run_cv(
         fold_t0 = time.perf_counter()
         X_tr, y_tr = X.iloc[tr_idx], y[tr_idx]
         X_va, y_va = X.iloc[va_idx], y[va_idx]
+        cw = _resolve_class_weight(cfg, y_tr)
         
         pipe = build_pipeline(
             max_features=cfg.text.max_features,
@@ -140,10 +157,12 @@ def run_cv(
             title_char_ngram_max=cfg.text.title_char_ngram_max,
             title_char_min_df=cfg.text.title_char_min_df,
             title_char_max_features=cfg.text.title_char_max_features,
+            source_min_count=cfg.source.min_count,
+            source_min_frac=cfg.source.min_frac,
             model_type=cfg.model.type,
             C=cfg.model.C,
             max_iter=cfg.model.max_iter,
-            class_weight=cfg.model.class_weight,
+            class_weight=cw,
             cache_dir=cache_dir,
         )
 
@@ -307,6 +326,7 @@ def train_and_test(
 
     X_dev = df_dev.drop(columns=["label"])
     y_dev = df_dev["label"].astype(int).to_numpy()
+    cw = _resolve_class_weight(cfg, y_dev)
 
     pipe = build_pipeline(
         max_features=cfg.text.max_features,
@@ -318,10 +338,12 @@ def train_and_test(
         title_char_ngram_max=cfg.text.title_char_ngram_max,
         title_char_min_df=cfg.text.title_char_min_df,
         title_char_max_features=cfg.text.title_char_max_features,
+        source_min_count=cfg.source.min_count,
+        source_min_frac=cfg.source.min_frac,
         model_type=cfg.model.type,
         C=cfg.model.C,
         max_iter=cfg.model.max_iter,
-        class_weight=cfg.model.class_weight,
+        class_weight=cw,
         cache_dir=cache_dir,
     )
 
