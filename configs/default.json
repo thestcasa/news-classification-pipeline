@@ -11,18 +11,26 @@
     "max_features": 100000,
     "ngram_min": 1,
     "ngram_max": 2,
-    "min_df": 10,
-    "title_repeat": 3,
+    "min_df": 5,
+    "title_repeat": 1,   
     "title_char": true,
     "title_char_ngram_min": 2,
     "title_char_ngram_max": 4,
-    "title_char_min_df": 5,
+    "title_char_min_df": 4,
     "title_char_max_features": 20000
   },
   "model": {
     "type": "linearsvc",
-    "C": 2.0,
+    "C": 4.0,
     "max_iter": 10000,
-    "class_weight": "balanced"
+    "class_weight": "balanced",
+    "class_weight_power": 1.0
+  },
+  "source": {
+    "min_count": 1,
+    "min_frac": null
+  },
+  "dedup": {
+    "drop_same_label": false
   }
 }
