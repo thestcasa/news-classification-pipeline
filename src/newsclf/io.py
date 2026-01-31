@@ -107,12 +107,15 @@ def drop_dev_rows_overlapping_eval(
     lowercase: bool = True,
     strip_accents: bool = True,
     placeholders: tuple[str, ...] = ("\\N",),
+    drop: bool = True,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Remove from development ALL rows whose (on[0], on[1]) pair appears >=1 time in evaluation.
     Equality is checked after canonicalization (see _canon_text_series).
 
-    Returns (filtered_dev_df, report_dict).
+    If drop=False, keep all dev rows and only report the overlap.
+
+    Returns (dev_df_or_filtered, report_dict).
     """
     c1, c2 = on
     for c in (c1, c2):
@@ -139,20 +142,26 @@ def drop_dev_rows_overlapping_eval(
     eval_key_u = np.unique(eval_key)
     leak_mask = np.isin(dev_key, eval_key_u)
 
-    removed = int(leak_mask.sum())
-    kept = int((~leak_mask).sum())
-
-    out = dev_df.loc[~leak_mask].copy()
+    n_overlap = int(leak_mask.sum())
+    if drop:
+        out = dev_df.loc[~leak_mask].copy()
+        removed = n_overlap
+    else:
+        out = dev_df
+        removed = 0
 
     report = {
         "on": on,
         "lowercase": lowercase,
         "strip_accents": strip_accents,
         "url_token": url_token,
+        "drop": drop,
         "n_dev_before": int(len(dev_df)),
         "n_eval": int(len(eval_df)),
+        "n_overlap_with_eval": n_overlap,
         "n_removed_from_dev": removed,
-        "n_dev_after": kept,
+        "n_dev_after": int(len(out)) if drop else int(len(dev_df)),
+        "pct_overlap_in_dev": 100.0 * n_overlap / max(1, len(dev_df)),
         "pct_removed_from_dev": 100.0 * removed / max(1, len(dev_df)),
     }
     return out, report

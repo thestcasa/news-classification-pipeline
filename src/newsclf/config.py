@@ -24,6 +24,17 @@ class Text:
     ngram_max: int
     min_df: int
     title_repeat: int
+    missing_article_token: str | None = "__MISSING_ARTICLE__"
+    max_df: float = 0.95
+    lowercase: bool = True
+    strip_accents: str | None = "unicode"
+    sublinear_tf: bool = True
+    char_enabled: bool = True
+    char_ngram_min: int = 3
+    char_ngram_max: int = 5
+    char_min_df: int = 3
+    char_max_features: int | None = None
+    char_analyzer: str = "char_wb"
     title_char: bool = False
     title_char_ngram_min: int = 2
     title_char_ngram_max: int = 4
@@ -37,6 +48,10 @@ class Model:
     max_iter: int
     class_weight: str | None  # "balanced" or None
     class_weight_power: float = 1.0
+    logreg_solver: str = "liblinear"
+    logreg_n_jobs: int = 1
+    linearsvc_dual: bool = False
+    ridge_alpha: float = 1.0
 
 @dataclass(frozen=True)
 class Source:
@@ -117,6 +132,10 @@ def load_config(path: str | Path, *, overrides: dict[str, Any] | None = None) ->
             max_iter=int(cfg["model"].get("max_iter", 2000)),
             class_weight=cw_norm,
             class_weight_power=float(cfg["model"].get("class_weight_power", 1.0)),
+            logreg_solver=str(cfg["model"].get("logreg_solver", "liblinear")),
+            logreg_n_jobs=int(cfg["model"].get("logreg_n_jobs", 1)),
+            linearsvc_dual=bool(cfg["model"].get("linearsvc_dual", False)),
+            ridge_alpha=float(cfg["model"].get("ridge_alpha", 1.0)),
         ),
         source=Source(**cfg.get("source", {})),
         dedup=Dedup(**cfg.get("dedup", {})),

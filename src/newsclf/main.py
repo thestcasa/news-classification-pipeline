@@ -93,7 +93,7 @@ def run_cv(
 
     df_dev = read_development(cfg.paths.dev_csv)
 
-    # ---- detect leakage in dev set and clean it ----
+    # ---- detect leakage in dev set (report only; do not remove) ----
     eval_df = read_evaluation(cfg.paths.eval_csv)
     df_dev, leak_report = drop_dev_rows_overlapping_eval(
         df_dev,
@@ -101,6 +101,7 @@ def run_cv(
         on=("title", "article"),
         lowercase=True,
         strip_accents=True,
+        drop=False,
     )
 
     print("[leakage]", leak_report)
@@ -121,7 +122,11 @@ def run_cv(
     print(f"[cv] source: min_count={cfg.source.min_count}  min_frac={cfg.source.min_frac}")
     print(
         f"[cv] text: max_features={cfg.text.max_features}  ngram=({cfg.text.ngram_min},{cfg.text.ngram_max})  "
-        f"min_df={cfg.text.min_df}  title_repeat={cfg.text.title_repeat}  "
+        f"min_df={cfg.text.min_df}  max_df={cfg.text.max_df}  title_repeat={cfg.text.title_repeat}  "
+        f"missing_article_token={cfg.text.missing_article_token}  "
+        f"char_enabled={cfg.text.char_enabled}  char_analyzer={cfg.text.char_analyzer}  "
+        f"char_ngram=({cfg.text.char_ngram_min},{cfg.text.char_ngram_max})  char_min_df={cfg.text.char_min_df}  "
+        f"char_max_features={cfg.text.char_max_features}  "
         f"title_char={cfg.text.title_char}  title_char_ngram=({cfg.text.title_char_ngram_min},{cfg.text.title_char_ngram_max})  "
         f"title_char_min_df={cfg.text.title_char_min_df}  title_char_max_features={cfg.text.title_char_max_features}"
     )
@@ -152,6 +157,17 @@ def run_cv(
             ngram_range=(cfg.text.ngram_min, cfg.text.ngram_max),
             min_df=cfg.text.min_df,
             title_repeat=cfg.text.title_repeat,
+            missing_article_token=cfg.text.missing_article_token,
+            max_df=cfg.text.max_df,
+            lowercase=cfg.text.lowercase,
+            strip_accents=cfg.text.strip_accents,
+            sublinear_tf=cfg.text.sublinear_tf,
+            char_enabled=cfg.text.char_enabled,
+            char_analyzer=cfg.text.char_analyzer,
+            char_ngram_min=cfg.text.char_ngram_min,
+            char_ngram_max=cfg.text.char_ngram_max,
+            char_min_df=cfg.text.char_min_df,
+            char_max_features=cfg.text.char_max_features,
             title_char=cfg.text.title_char,
             title_char_ngram_min=cfg.text.title_char_ngram_min,
             title_char_ngram_max=cfg.text.title_char_ngram_max,
@@ -163,41 +179,39 @@ def run_cv(
             C=cfg.model.C,
             max_iter=cfg.model.max_iter,
             class_weight=cw,
+            logreg_solver=cfg.model.logreg_solver,
+            logreg_n_jobs=cfg.model.logreg_n_jobs,
+            linearsvc_dual=cfg.model.linearsvc_dual,
+            ridge_alpha=cfg.model.ridge_alpha,
             cache_dir=cache_dir,
         )
 
         print(f"\n[cv][fold {fold}/{cfg.cv.k}] fit start  (n_train={len(tr_idx):,} n_valid={len(va_idx):,})", flush=True)
 
-        # -------------------
-        # DEBUG
-        # -------------------
         from time import perf_counter
-        from scipy import sparse
+        import os
 
+        debug_pre = os.getenv("NEWSCLF_DEBUG_PRE", "0") == "1"
         t = perf_counter()
+        pipe.fit(X_tr, y_tr)  # Pipeline(verbose=True) will print step timings if enabled in your build_pipeline
+        print(f"[debug] pipe.fit: {perf_counter()-t:.2f}s")
         pre = pipe.named_steps["pre"]
-        Xtr = pre.fit_transform(X_tr, y_tr)
-        print(f"[debug] pre.fit_transform: {perf_counter()-t:.2f}s")
-
-        print(f"[debug] Xtr shape={Xtr.shape}, nnz={Xtr.nnz:,}, dtype={Xtr.dtype}")
-        print(f"[debug] density={Xtr.nnz/(Xtr.shape[0]*Xtr.shape[1]):.6e}")
-
-        t = perf_counter()
-        pipe.named_steps["clf"].fit(Xtr, y_tr)
-        print(f"[debug] clf.fit: {perf_counter()-t:.2f}s")
+        if debug_pre:
+            # DEBUG: timing + feature matrix stats
+            t = perf_counter()
+            Xtr = pre.transform(X_tr)
+            print(f"[debug] pre.transform(train): {perf_counter()-t:.2f}s")
+            print(f"[debug] Xtr shape={Xtr.shape}, nnz={Xtr.nnz:,}, dtype={Xtr.dtype}")
+            print(f"[debug] density={Xtr.nnz/(Xtr.shape[0]*Xtr.shape[1]):.6e}")
 
         t = perf_counter()
-        Xva = pre.transform(X_va)
-        print(f"[debug] pre.transform(valid): {perf_counter()-t:.2f}s")
-        print(f"[debug] Xva shape={Xva.shape}, nnz={Xva.nnz:,}, dtype={Xva.dtype}")
-        t = perf_counter()
-        pred = pipe.named_steps["clf"].predict(Xva)
-        print(f"[debug] clf.predict: {perf_counter()-t:.2f}s")
-        # -------------------
-
-        # OFF ONLY FOR DEBUG
-        # pipe.fit(X_tr, y_tr)  # Pipeline(verbose=True) will print step timings if enabled in your build_pipeline
-        # pred = pipe.predict(X_va)
+        pred = pipe.predict(X_va)
+        print(f"[debug] pipe.predict: {perf_counter()-t:.2f}s")
+        if debug_pre:
+            t = perf_counter()
+            Xva = pre.transform(X_va)
+            print(f"[debug] pre.transform(valid): {perf_counter()-t:.2f}s")
+            print(f"[debug] Xva shape={Xva.shape}, nnz={Xva.nnz:,}, dtype={Xva.dtype}")
 
         macro = f1_score(y_va, pred, average="macro")
         micro = f1_score(y_va, pred, average="micro")
@@ -310,7 +324,7 @@ def train_and_test(
     # --- Train final model
     df_dev = read_development(cfg.paths.dev_csv)
 
-    # ---- detect leakage in dev set and clean it ----
+    # ---- detect leakage in dev set (report only; do not remove) ----
     df_eval = read_evaluation(cfg.paths.eval_csv)
     df_dev, leak_report = drop_dev_rows_overlapping_eval(
         df_dev,
@@ -318,6 +332,7 @@ def train_and_test(
         on=("title", "article"),
         lowercase=True,
         strip_accents=True,
+        drop=False,
     )
     print("[leakage]", leak_report)
     df_dev, dup_report = drop_cross_label_duplicates(df_dev, on=("title", "article"))
@@ -333,6 +348,17 @@ def train_and_test(
         ngram_range=(cfg.text.ngram_min, cfg.text.ngram_max),
         min_df=cfg.text.min_df,
         title_repeat=cfg.text.title_repeat,
+        missing_article_token=cfg.text.missing_article_token,
+        max_df=cfg.text.max_df,
+        lowercase=cfg.text.lowercase,
+        strip_accents=cfg.text.strip_accents,
+        sublinear_tf=cfg.text.sublinear_tf,
+        char_enabled=cfg.text.char_enabled,
+        char_analyzer=cfg.text.char_analyzer,
+        char_ngram_min=cfg.text.char_ngram_min,
+        char_ngram_max=cfg.text.char_ngram_max,
+        char_min_df=cfg.text.char_min_df,
+        char_max_features=cfg.text.char_max_features,
         title_char=cfg.text.title_char,
         title_char_ngram_min=cfg.text.title_char_ngram_min,
         title_char_ngram_max=cfg.text.title_char_ngram_max,
@@ -344,6 +370,10 @@ def train_and_test(
         C=cfg.model.C,
         max_iter=cfg.model.max_iter,
         class_weight=cw,
+        logreg_solver=cfg.model.logreg_solver,
+        logreg_n_jobs=cfg.model.logreg_n_jobs,
+        linearsvc_dual=cfg.model.linearsvc_dual,
+        ridge_alpha=cfg.model.ridge_alpha,
         cache_dir=cache_dir,
     )
 

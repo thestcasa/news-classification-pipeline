@@ -68,8 +68,6 @@ class TextCleaner(BaseEstimator, TransformerMixin):
         return ser.map(self._clean_one).to_numpy(dtype=object)
 
 
-
-
 class TextJoiner(BaseEstimator, TransformerMixin):
     def __init__(
         self,

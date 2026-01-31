@@ -40,6 +40,16 @@ def build_pipeline(
     ngram_range: tuple[int, int],
     min_df: int,
     title_repeat: int,
+    max_df: float = 0.95,
+    lowercase: bool = True,
+    strip_accents: str | None = "unicode",
+    sublinear_tf: bool = True,
+    char_enabled: bool = True,
+    char_ngram_min: int = 3,
+    char_ngram_max: int = 5,
+    char_min_df: int = 3,
+    char_max_features: int | None = None,
+    char_analyzer: str = "char_wb",
     title_char: bool = False,
     title_char_ngram_min: int = 2,
     title_char_ngram_max: int = 4,
@@ -51,37 +61,46 @@ def build_pipeline(
     C: float,
     max_iter: int,
     class_weight: str | None,
+    logreg_solver: str = "liblinear",
+    logreg_n_jobs: int = 1,
+    linearsvc_dual: bool = False,
+    ridge_alpha: float = 1.0,
     cache_dir: str | None = None,
     missing_article_token: str | None = "__MISSING_ARTICLE__",
 ):
     
     # PREPROCESSING
     # text -> tfidf
+    tfidf_union = [
+        ("word", TfidfVectorizer(
+            max_features=max_features,
+            ngram_range=ngram_range,  # es: (1,2)
+            min_df=min_df,
+            max_df=max_df,
+            strip_accents=strip_accents,
+            lowercase=lowercase,
+            sublinear_tf=sublinear_tf,
+        )),
+    ]
+    if char_enabled:
+        char_max = int(char_max_features) if char_max_features is not None else max(20000, max_features // 4)
+        tfidf_union.append(
+            ("char", TfidfVectorizer(
+                analyzer=char_analyzer,
+                ngram_range=(int(char_ngram_min), int(char_ngram_max)),  # buon default
+                min_df=int(char_min_df),
+                max_df=max_df,
+                max_features=char_max,  # limita costo
+                strip_accents=strip_accents,
+                lowercase=lowercase,
+                sublinear_tf=sublinear_tf,
+            ))
+        )
     text_pipe = Pipeline(steps=[
         ("ad_strip", AdPrefixStripper()),
         ("join", TextJoiner(title_repeat=title_repeat, missing_article_token=missing_article_token)),
         ("clean", TextCleaner()),
-        ("tfidf_union", FeatureUnion(transformer_list=[
-            ("word", TfidfVectorizer(
-                max_features=max_features,
-                ngram_range=ngram_range,  # es: (1,2)
-                min_df=min_df,
-                max_df=0.95,
-                strip_accents="unicode",
-                lowercase=True,
-                sublinear_tf=True,
-            )),
-            ("char", TfidfVectorizer(
-                analyzer="char_wb",
-                ngram_range=(3, 5),  # buon default
-                min_df=3,
-                max_df=0.95,
-                max_features=max(20000, max_features // 4),  # limita costo
-                strip_accents="unicode",
-                lowercase=True,
-                sublinear_tf=True,
-            )),
-        ])),
+        ("tfidf_union", FeatureUnion(transformer_list=tfidf_union)),
         
     ])
 
@@ -95,14 +114,14 @@ def build_pipeline(
             ("col", TextColumn("title")),
             ("clean", TextCleaner()),
             ("tfidf", TfidfVectorizer(
-                analyzer="char_wb",
+                analyzer=char_analyzer,
                 ngram_range=(int(title_char_ngram_min), int(title_char_ngram_max)),
                 min_df=int(title_char_min_df),
-                max_df=0.95,
+                max_df=max_df,
                 max_features=int(title_char_max_features),
-                strip_accents="unicode",
-                lowercase=True,
-                sublinear_tf=True,
+                strip_accents=strip_accents,
+                lowercase=lowercase,
+                sublinear_tf=sublinear_tf,
             )),
         ])
 
@@ -164,8 +183,8 @@ def build_pipeline(
             C=C,
             max_iter=max_iter,
             class_weight=class_weight,
-            n_jobs=1,      
-            solver="liblinear",
+            n_jobs=logreg_n_jobs,
+            solver=logreg_solver,
 
         )
     elif model_type == "linearsvc":
@@ -173,13 +192,13 @@ def build_pipeline(
             C=C,
             class_weight=class_weight,
             max_iter=max_iter,
-            dual=False,
+            dual=linearsvc_dual,
         )
 
     elif model_type == "ridge":
         # strong/fast linear baseline for high-dimenisonal sparse text
         clf = RidgeClassifier(
-            alpha=1.0,
+            alpha=ridge_alpha,
             class_weight=class_weight,
         )
 
