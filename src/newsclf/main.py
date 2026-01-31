@@ -124,6 +124,7 @@ def run_cv(
         f"[cv] text: max_features={cfg.text.max_features}  ngram=({cfg.text.ngram_min},{cfg.text.ngram_max})  "
         f"min_df={cfg.text.min_df}  max_df={cfg.text.max_df}  title_repeat={cfg.text.title_repeat}  "
         f"missing_article_token={cfg.text.missing_article_token}  "
+        f"stop_words={cfg.text.stop_words}  "
         f"char_enabled={cfg.text.char_enabled}  char_analyzer={cfg.text.char_analyzer}  "
         f"char_ngram=({cfg.text.char_ngram_min},{cfg.text.char_ngram_max})  char_min_df={cfg.text.char_min_df}  "
         f"char_max_features={cfg.text.char_max_features}  "
@@ -162,6 +163,7 @@ def run_cv(
             lowercase=cfg.text.lowercase,
             strip_accents=cfg.text.strip_accents,
             sublinear_tf=cfg.text.sublinear_tf,
+            stop_words=cfg.text.stop_words,
             char_enabled=cfg.text.char_enabled,
             char_analyzer=cfg.text.char_analyzer,
             char_ngram_min=cfg.text.char_ngram_min,
@@ -353,6 +355,7 @@ def train_and_test(
         lowercase=cfg.text.lowercase,
         strip_accents=cfg.text.strip_accents,
         sublinear_tf=cfg.text.sublinear_tf,
+        stop_words=cfg.text.stop_words,
         char_enabled=cfg.text.char_enabled,
         char_analyzer=cfg.text.char_analyzer,
         char_ngram_min=cfg.text.char_ngram_min,

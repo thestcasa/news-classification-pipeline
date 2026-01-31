@@ -44,6 +44,7 @@ def build_pipeline(
     lowercase: bool = True,
     strip_accents: str | None = "unicode",
     sublinear_tf: bool = True,
+    stop_words: str | list[str] | None = None,
     char_enabled: bool = True,
     char_ngram_min: int = 3,
     char_ngram_max: int = 5,
@@ -80,6 +81,7 @@ def build_pipeline(
             strip_accents=strip_accents,
             lowercase=lowercase,
             sublinear_tf=sublinear_tf,
+            stop_words=stop_words,
         )),
     ]
     if char_enabled:

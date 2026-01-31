@@ -29,6 +29,7 @@ class Text:
     lowercase: bool = True
     strip_accents: str | None = "unicode"
     sublinear_tf: bool = True
+    stop_words: str | list[str] | None = None
     char_enabled: bool = True
     char_ngram_min: int = 3
     char_ngram_max: int = 5
