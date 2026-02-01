@@ -13,24 +13,23 @@ import pandas as pd
 from sklearn.metrics import average_precision_score, classification_report, precision_recall_curve
 
 
-# -----------------------------
-# Fixed schema & fixed file paths
-# -----------------------------
 DEV_COLS = ["Id", "source", "title", "article", "page_rank", "timestamp", "label"]
 EVAL_COLS = ["Id", "source", "title", "article", "page_rank", "timestamp"]
 
 ID_COL = "Id"
+TEXT_COLS = ["title", "article"]
 
 DEV_PATH = Path("data/raw/development.csv")
 EVAL_PATH = Path("data/raw/evaluation.csv")
 
+TS_PLACEHOLDERS = {"0000-00-00 00:00:00", "0000-00-00"}
+MISSING_SENTINELS = {"\\N"}  
 
-# -----------------------------
-# Formatting helpers
-# -----------------------------
 SEP = "=" * 96
 SUBSEP = "-" * 96
 
+
+# Console helpers
 
 def section(title: str) -> None:
     print("\n" + SEP)
@@ -56,17 +55,41 @@ def shorten(s: str, max_len: int = 160) -> str:
     return s if len(s) <= max_len else s[: max_len - 3] + "..."
 
 
+def ratio_str(count: int, total: int) -> str:
+    pct = (count / total) if total else 0.0
+    return f"{fmt_int(int(count))}/{fmt_int(int(total))} ({fmt_pct(pct)})"
+
+
+# Small data utilities
+
+def as_str_series(x: pd.Series) -> pd.Series:
+    # Keep behavior consistent: strings, but don't explode on NaN
+    return x.astype("string")
+
+
 def stable_hash_series(s: pd.Series) -> pd.Series:
+    # NOTE: intentionally MD5 (fast, stable for EDA), not for security.
     return s.fillna("").astype(str).apply(
         lambda x: hashlib.md5(x.encode("utf-8", errors="ignore")).hexdigest()
     )
 
 
+def fingerprint_head(df: pd.DataFrame, n: int = 50_000) -> str:
+    sample = df.head(min(n, len(df)))
+    h = hashlib.md5(pd.util.hash_pandas_object(sample, index=True).values.tobytes()).hexdigest()
+    return h
+
+
 def try_parse_datetime(ts: pd.Series) -> pd.Series:
-    placeholder = "0000-00-00 00:00:00"
-    ts_clean = ts.astype(str)
-    ts_clean = ts_clean.mask(ts_clean.eq(placeholder), other=np.nan)
-    return pd.to_datetime(ts_clean, errors="coerce")
+    ts_str = ts.astype(str)
+    ts_str = ts_str.mask(ts_str.isin(TS_PLACEHOLDERS), other=np.nan)
+    return pd.to_datetime(ts_str, errors="coerce")
+
+
+def missing_like_text(s: pd.Series) -> pd.Series:
+    ss = as_str_series(s)
+    norm = ss.fillna("").str.strip()
+    return ss.isna() | norm.eq("") | norm.isin(list(MISSING_SENTINELS))
 
 
 @dataclass
@@ -76,24 +99,6 @@ class DatasetProfile:
     n_rows: int
     n_cols: int
     columns: List[str]
-
-
-# -----------------------------
-# Schema checks
-# -----------------------------
-def enforce_schema(df: pd.DataFrame, expected_cols: List[str], name: str) -> None:
-    cols = list(df.columns)
-    if cols != expected_cols:
-        missing = [c for c in expected_cols if c not in cols]
-        extra = [c for c in cols if c not in expected_cols]
-        msg = [f"[SCHEMA ERROR] {name} columns do not match expected schema."]
-        msg.append(f"  Current:  {cols}")
-        msg.append(f"  Expected: {expected_cols}")
-        if missing:
-            msg.append(f"  Missing:  {missing}")
-        if extra:
-            msg.append(f"  Extra:    {extra}")
-        raise ValueError("\n".join(msg))
 
 
 def infer_profile(name: str, path: Path, df: pd.DataFrame) -> DatasetProfile:
@@ -106,13 +111,30 @@ def infer_profile(name: str, path: Path, df: pd.DataFrame) -> DatasetProfile:
     )
 
 
-# -----------------------------
-# Core EDA routines
-# -----------------------------
+def enforce_schema(df: pd.DataFrame, expected_cols: List[str], name: str) -> None:
+    cols = list(df.columns)
+    if cols == expected_cols:
+        return
+
+    missing = [c for c in expected_cols if c not in cols]
+    extra = [c for c in cols if c not in expected_cols]
+    msg = [f"[SCHEMA ERROR] {name} columns do not match expected schema."]
+    msg.append(f"  Current:  {cols}")
+    msg.append(f"  Expected: {expected_cols}")
+    if missing:
+        msg.append(f"  Missing:  {missing}")
+    if extra:
+        msg.append(f"  Extra:    {extra}")
+    raise ValueError("\n".join(msg))
+
+
+# Core EDA printers
+
 def print_basic_info(df: pd.DataFrame, prof: DatasetProfile) -> None:
     subsection("Basic structure")
-    print(f"File: {prof.path}")
+    print(f"File:  {prof.path}")
     print(f"Shape: {fmt_int(prof.n_rows)} rows × {fmt_int(prof.n_cols)} columns")
+
     print("Columns / dtypes:")
     dtypes = df.dtypes.astype(str)
     for c in df.columns:
@@ -121,58 +143,76 @@ def print_basic_info(df: pd.DataFrame, prof: DatasetProfile) -> None:
     mem_mb = df.memory_usage(deep=True).sum() / (1024**2)
     print(f"Approx. memory usage (deep): {mem_mb:.2f} MB")
 
-    sample = df.head(min(50000, len(df)))
-    h = hashlib.md5(pd.util.hash_pandas_object(sample, index=True).values.tobytes()).hexdigest()
-    print(f"Fingerprint (md5 over head rows): {h}")
+    print(f"Fingerprint (md5 over head rows): {fingerprint_head(df)}")
 
 
 def print_missingness(df: pd.DataFrame) -> None:
     subsection("Missingness & empty strings")
+
     na = df.isna().sum()
-    na_pct = (na / len(df)).replace([np.inf, np.nan], 0.0)
+    na_pct = (na / max(1, len(df))).replace([np.inf, np.nan], 0.0)
 
-    placeholder_map = {
-        "timestamp": {"0000-00-00 00:00:00", "0000-00-00"},
+    placeholder_by_col = {
+        "timestamp": TS_PLACEHOLDERS,
     }
-
-    empty_counts = {}
-    placeholder_counts = {}
-    missing_like_counts = {}
-    for c in df.columns:
-        if pd.api.types.is_string_dtype(df[c]) or df[c].dtype == object:
-            s = df[c].astype("string")
-            s_norm = s.fillna("").str.strip()
-            placeholders = set(placeholder_map.get(c, set()))
-            placeholders.add("\\N")
-            empty = s_norm.eq("")
-            placeholder = s_norm.isin(list(placeholders))
-            missing_like = s.isna() | empty | placeholder
-            empty_counts[c] = int(empty.sum())
-            placeholder_counts[c] = int(placeholder.sum())
-            missing_like_counts[c] = int(missing_like.sum())
-        else:
-            empty_counts[c] = 0
-            placeholder_counts[c] = 0
-            missing_like_counts[c] = int(na[c])
-        if c == "timestamp":
-            ts_missing = try_parse_datetime(df[c]).isna()
-            missing_like_counts[c] = int(ts_missing.sum())
 
     rows = []
     for c in df.columns:
-        rows.append(
-            {
-                "col": c,
-                "na": int(na[c]),
-                "na_%": float(na_pct[c]),
-                "empty_str": int(empty_counts.get(c, 0)),
-                "empty_%": (empty_counts.get(c, 0) / len(df)) if len(df) else 0.0,
-                "placeholder": int(placeholder_counts.get(c, 0)),
-                "placeholder_%": (placeholder_counts.get(c, 0) / len(df)) if len(df) else 0.0,
-                "missing_like": int(missing_like_counts.get(c, 0)),
-                "missing_like_%": (missing_like_counts.get(c, 0) / len(df)) if len(df) else 0.0,
-            }
-        )
+        if c == "timestamp":
+            ts_missing = try_parse_datetime(df[c]).isna()
+            empty = as_str_series(df[c]).fillna("").str.strip().eq("")
+            placeholder = as_str_series(df[c]).fillna("").str.strip().isin(list(TS_PLACEHOLDERS | MISSING_SENTINELS))
+            missing_like = ts_missing | empty | placeholder
+            rows.append(
+                {
+                    "col": c,
+                    "na": int(na[c]),
+                    "na_%": float(na_pct[c]),
+                    "empty_str": int(empty.sum()),
+                    "empty_%": float(empty.mean()) if len(df) else 0.0,
+                    "placeholder": int(placeholder.sum()),
+                    "placeholder_%": float(placeholder.mean()) if len(df) else 0.0,
+                    "missing_like": int(missing_like.sum()),
+                    "missing_like_%": float(missing_like.mean()) if len(df) else 0.0,
+                }
+            )
+            continue
+
+        if pd.api.types.is_string_dtype(df[c]) or df[c].dtype == object:
+            s = as_str_series(df[c])
+            norm = s.fillna("").str.strip()
+            placeholders = set(placeholder_by_col.get(c, set())) | MISSING_SENTINELS
+            empty = norm.eq("")
+            placeholder = norm.isin(list(placeholders))
+            missing_like = s.isna() | empty | placeholder
+            rows.append(
+                {
+                    "col": c,
+                    "na": int(na[c]),
+                    "na_%": float(na_pct[c]),
+                    "empty_str": int(empty.sum()),
+                    "empty_%": float(empty.mean()) if len(df) else 0.0,
+                    "placeholder": int(placeholder.sum()),
+                    "placeholder_%": float(placeholder.mean()) if len(df) else 0.0,
+                    "missing_like": int(missing_like.sum()),
+                    "missing_like_%": float(missing_like.mean()) if len(df) else 0.0,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "col": c,
+                    "na": int(na[c]),
+                    "na_%": float(na_pct[c]),
+                    "empty_str": 0,
+                    "empty_%": 0.0,
+                    "placeholder": 0,
+                    "placeholder_%": 0.0,
+                    "missing_like": int(na[c]),
+                    "missing_like_%": float(na_pct[c]),
+                }
+            )
+
     out = pd.DataFrame(rows).sort_values(["na", "empty_str"], ascending=False)
     print(
         out.to_string(
@@ -189,76 +229,64 @@ def print_missingness(df: pd.DataFrame) -> None:
 
 def print_text_missingness(df: pd.DataFrame, col: str) -> None:
     subsection(f"Missing/empty check: {col}")
-    s = df[col].astype("string")
-    na = s.isna().sum()
-    s_norm = s.fillna("").str.strip()
-    empty = s_norm.eq("").sum()
-    placeholder = s_norm.eq("\\N").sum()
-    missing_like = int((s.isna() | s_norm.eq("") | s_norm.eq("\\N")).sum())
-    print(f"{col} missing (NA): {fmt_int(int(na))} ({fmt_pct(float(na / len(df)))})")
-    print(f"{col} empty/blank: {fmt_int(int(empty))} ({fmt_pct(float(empty / len(df)))})")
-    print(f"{col} placeholder '\\\\N': {fmt_int(int(placeholder))} ({fmt_pct(float(placeholder / len(df)))})")
-    print(f"{col} missing/empty/\\\\N: {fmt_int(int(missing_like))} ({fmt_pct(float(missing_like / len(df)))})")
+    miss = missing_like_text(df[col])
+    na = as_str_series(df[col]).isna().sum()
+    empty = as_str_series(df[col]).fillna("").str.strip().eq("").sum()
+    placeholder = as_str_series(df[col]).fillna("").str.strip().isin(list(MISSING_SENTINELS)).sum()
+
+    n = max(1, len(df))
+    print(f"{col} missing (NA): {fmt_int(int(na))} ({fmt_pct(float(na / n))})")
+    print(f"{col} empty/blank: {fmt_int(int(empty))} ({fmt_pct(float(empty / n))})")
+    print(f"{col} placeholder '\\\\N': {fmt_int(int(placeholder))} ({fmt_pct(float(placeholder / n))})")
+    print(f"{col} missing/empty/\\\\N: {fmt_int(int(miss.sum()))} ({fmt_pct(float(miss.mean()))})")
 
 
 def print_missing_article_label_distribution(df: pd.DataFrame) -> None:
     subsection("Missing articles by label (share of all missing articles)")
-    s = df["article"].astype("string")
-    s_norm = s.fillna("").str.strip()
-    missing_like = s.isna() | s_norm.eq("") | s_norm.eq("\\N")
-    total_missing = int(missing_like.sum())
+    miss = missing_like_text(df["article"])
+    total_missing = int(miss.sum())
     if total_missing == 0:
         print("No missing/empty/\\N articles found.")
         return
-    counts = df.loc[missing_like, "label"].value_counts().sort_index()
+
+    counts = df.loc[miss, "label"].value_counts().sort_index()
     out = pd.DataFrame({"label": counts.index.astype(str), "missing_count": counts.values})
     out["share_of_missing"] = out["missing_count"] / total_missing
-    out = out.sort_values("label")
-    print(out.to_string(index=False, formatters={"share_of_missing": fmt_pct}))
+    print(out.sort_values("label").to_string(index=False, formatters={"share_of_missing": fmt_pct}))
 
 
 def print_missing_timestamp_label_distribution(df: pd.DataFrame) -> None:
     subsection("Missing timestamps by label (share of all missing timestamps)")
     ts = try_parse_datetime(df["timestamp"])
-    missing_like = ts.isna()
-    total_missing = int(missing_like.sum())
+    miss = ts.isna()
+    total_missing = int(miss.sum())
     if total_missing == 0:
         print("No missing/invalid timestamps found.")
         return
-    counts = df.loc[missing_like, "label"].value_counts().sort_index()
+
+    counts = df.loc[miss, "label"].value_counts().sort_index()
     out = pd.DataFrame({"label": counts.index.astype(str), "missing_count": counts.values})
     out["share_of_missing"] = out["missing_count"] / total_missing
-    out = out.sort_values("label")
-    print(out.to_string(index=False, formatters={"share_of_missing": fmt_pct}))
+    print(out.sort_values("label").to_string(index=False, formatters={"share_of_missing": fmt_pct}))
 
 
 def print_label_timestamp_missingness(df: pd.DataFrame) -> None:
     subsection("Per-label missingness: timestamp")
-    s = df["timestamp"].astype("string")
-    s_norm = s.fillna("").str.strip()
-    placeholders = s_norm.isin(["0000-00-00 00:00:00", "0000-00-00"])
+    s = as_str_series(df["timestamp"]).fillna("").str.strip()
+    placeholders = s.isin(list(TS_PLACEHOLDERS))
     missing_like = try_parse_datetime(df["timestamp"]).isna()
-    tmp = pd.DataFrame(
-        {
-            "label": df["label"],
-            "placeholder": placeholders,
-            "missing_like": missing_like,
-        }
-    )
+
+    tmp = pd.DataFrame({"label": df["label"], "placeholder": placeholders, "missing_like": missing_like})
     grp = tmp.groupby("label")
     totals = grp.size().rename("total")
     counts = grp[["placeholder", "missing_like"]].sum()
     out = counts.join(totals).reset_index().sort_values("label")
 
-    def fmt_ratio(x: int, total: int) -> str:
-        pct = (x / total) if total else 0.0
-        return f"{fmt_int(int(x))}/{fmt_int(int(total))} ({fmt_pct(pct)})"
-
     out_fmt = pd.DataFrame(
         {
             "label": out["label"],
-            "placeholder": [fmt_ratio(x, t) for x, t in zip(out["placeholder"], out["total"])],
-            "missing_like": [fmt_ratio(x, t) for x, t in zip(out["missing_like"], out["total"])],
+            "placeholder": [ratio_str(x, t) for x, t in zip(out["placeholder"], out["total"])],
+            "missing_like": [ratio_str(x, t) for x, t in zip(out["missing_like"], out["total"])],
         }
     )
     print(out_fmt.to_string(index=False))
@@ -266,34 +294,31 @@ def print_label_timestamp_missingness(df: pd.DataFrame) -> None:
 
 def print_label_text_missingness(df: pd.DataFrame, col: str) -> None:
     subsection(f"Per-label missingness: {col}")
-    s = df[col].astype("string")
-    s_norm = s.fillna("").str.strip()
+    s = as_str_series(df[col])
+    norm = s.fillna("").str.strip()
+
     tmp = pd.DataFrame(
         {
             "label": df["label"],
             "na": s.isna(),
-            "empty": s_norm.eq(""),
-            "placeholder": s_norm.eq("\\N"),
+            "empty": norm.eq(""),
+            "placeholder": norm.isin(list(MISSING_SENTINELS)),
         }
     )
     tmp["missing_like"] = tmp["na"] | tmp["empty"] | tmp["placeholder"]
+
     grp = tmp.groupby("label")
     totals = grp.size().rename("total")
     counts = grp[["na", "empty", "placeholder", "missing_like"]].sum()
-
     out = counts.join(totals).reset_index().sort_values("label")
-
-    def fmt_ratio(x: int, total: int) -> str:
-        pct = (x / total) if total else 0.0
-        return f"{fmt_int(int(x))}/{fmt_int(int(total))} ({fmt_pct(pct)})"
 
     out_fmt = pd.DataFrame(
         {
             "label": out["label"],
-            "na": [fmt_ratio(x, t) for x, t in zip(out["na"], out["total"])],
-            "empty": [fmt_ratio(x, t) for x, t in zip(out["empty"], out["total"])],
-            "placeholder": [fmt_ratio(x, t) for x, t in zip(out["placeholder"], out["total"])],
-            "missing_like": [fmt_ratio(x, t) for x, t in zip(out["missing_like"], out["total"])],
+            "na": [ratio_str(x, t) for x, t in zip(out["na"], out["total"])],
+            "empty": [ratio_str(x, t) for x, t in zip(out["empty"], out["total"])],
+            "placeholder": [ratio_str(x, t) for x, t in zip(out["placeholder"], out["total"])],
+            "missing_like": [ratio_str(x, t) for x, t in zip(out["missing_like"], out["total"])],
         }
     )
     print(out_fmt.to_string(index=False))
@@ -303,36 +328,43 @@ def print_id_checks(df: pd.DataFrame) -> None:
     subsection("ID sanity checks")
     ids = df[ID_COL]
     print(f"ID column: {ID_COL} (dtype={ids.dtype})")
-    print(f"Missing IDs: {fmt_int(int(ids.isna().sum()))} ({fmt_pct(float(ids.isna().mean()))})")
 
-    dup = ids.duplicated().sum()
-    print(f"Duplicate IDs: {fmt_int(int(dup))} ({fmt_pct(float(dup / len(df)))})")
+    miss = int(ids.isna().sum())
+    print(f"Missing IDs: {fmt_int(miss)} ({fmt_pct(float(ids.isna().mean()))})")
+
+    dup = int(ids.duplicated().sum())
+    print(f"Duplicate IDs: {fmt_int(dup)} ({fmt_pct(float(dup / max(1, len(df))))})")
 
     if pd.api.types.is_numeric_dtype(ids):
         print(f"ID min/max: {int(np.nanmin(ids))} / {int(np.nanmax(ids))}")
     else:
-        nun = ids.nunique(dropna=True)
-        print(f"Unique IDs: {fmt_int(int(nun))}")
+        nun = int(ids.nunique(dropna=True))
+        print(f"Unique IDs: {fmt_int(nun)}")
 
 
 def print_duplicates(df: pd.DataFrame) -> None:
     subsection("Row & content duplicates")
-    dup_rows = df.duplicated().sum()
-    print(f"Fully duplicated rows: {fmt_int(int(dup_rows))} ({fmt_pct(float(dup_rows / len(df)))})")
 
-    dup_content = df.duplicated(subset=["title", "article"]).sum()
-    print(f"Duplicate pairs on ['title','article']: {fmt_int(int(dup_content))} ({fmt_pct(float(dup_content / len(df)))})")
+    dup_rows = int(df.duplicated().sum())
+    print(f"Fully duplicated rows: {fmt_int(dup_rows)} ({fmt_pct(float(dup_rows / max(1, len(df))))})")
 
-    dup_title = df.duplicated(subset=["title"]).sum()
-    print(f"Duplicate titles: {fmt_int(int(dup_title))} ({fmt_pct(float(dup_title / len(df)))})")
+    dup_content = int(df.duplicated(subset=["title", "article"]).sum())
+    print(
+        "Duplicate pairs on ['title','article']: "
+        f"{fmt_int(dup_content)} ({fmt_pct(float(dup_content / max(1, len(df))))})"
+    )
+
+    dup_title = int(df.duplicated(subset=["title"]).sum())
+    print(f"Duplicate titles: {fmt_int(dup_title)} ({fmt_pct(float(dup_title / max(1, len(df))))})")
 
 
 def print_categorical_summary(df: pd.DataFrame, col: str, topn: int = 10) -> None:
-    nun = df[col].nunique(dropna=True)
-    print(f"\n[{col}] unique values: {fmt_int(int(nun))}")
+    nun = int(df[col].nunique(dropna=True))
+    print(f"\n[{col}] unique values: {fmt_int(nun)}")
+
     vc = df[col].value_counts(dropna=False).head(topn)
     out = pd.DataFrame({"value": vc.index.astype(str), "count": vc.values})
-    out["%"] = out["count"] / len(df)
+    out["%"] = out["count"] / max(1, len(df))
     print(out.to_string(index=False, formatters={"%": fmt_pct}))
 
 
@@ -345,13 +377,12 @@ def print_numeric_summary(df: pd.DataFrame, col: str) -> None:
 
 def print_timestamp_summary(df: pd.DataFrame) -> None:
     subsection("Timestamp quality & distribution")
-    ts_raw = df["timestamp"]
 
-    placeholder = "0000-00-00 00:00:00"
-    is_placeholder = ts_raw.astype(str).eq(placeholder)
-    print(f"Placeholder '{placeholder}': {fmt_int(int(is_placeholder.sum()))} ({fmt_pct(float(is_placeholder.mean()))})")
+    ts_raw = as_str_series(df["timestamp"])
+    is_placeholder = ts_raw.fillna("").isin(list(TS_PLACEHOLDERS))
+    print(f"Placeholder '0000-00-00 00:00:00': {fmt_int(int(is_placeholder.sum()))} ({fmt_pct(float(is_placeholder.mean()))})")
 
-    ts = try_parse_datetime(ts_raw)
+    ts = try_parse_datetime(df["timestamp"])
     invalid = ts.isna()
     print(f"Unparseable/NaT timestamps: {fmt_int(int(invalid.sum()))} ({fmt_pct(float(invalid.mean()))})")
 
@@ -362,7 +393,7 @@ def print_timestamp_summary(df: pd.DataFrame) -> None:
         years = ts.dropna().dt.year.value_counts().sort_index()
         print("\nCounts by year (valid only):")
         out = pd.DataFrame({"year": years.index.astype(int), "count": years.values})
-        out["%"] = out["count"] / len(df)
+        out["%"] = out["count"] / max(1, len(df))
         print(out.to_string(index=False, formatters={"%": fmt_pct}))
 
         hours = ts.dropna().dt.hour.value_counts().sort_index()
@@ -375,7 +406,8 @@ def print_timestamp_summary(df: pd.DataFrame) -> None:
 
 def print_text_summary(df: pd.DataFrame, col: str, sample_k: int = 3, seed: int = 0) -> None:
     subsection(f"Text field analysis: {col}")
-    s = df[col].astype("string").fillna("")
+
+    s = as_str_series(df[col]).fillna("")
     char_len = s.str.len()
     word_len = s.str.split().str.len()
 
@@ -413,7 +445,7 @@ def print_text_summary(df: pd.DataFrame, col: str, sample_k: int = 3, seed: int 
         for i in idx_long:
             print(f"  - ({int(char_len.loc[i])} chars) {shorten(s.loc[i])}")
 
-    if sample_k > 0:
+    if sample_k > 0 and len(df) > 0:
         rng = np.random.default_rng(seed)
         pick = rng.choice(df.index.to_numpy(), size=min(sample_k, len(df)), replace=False)
         print(f"\nRandom sample ({min(sample_k, len(df))} rows):")
@@ -423,13 +455,15 @@ def print_text_summary(df: pd.DataFrame, col: str, sample_k: int = 3, seed: int 
 
 def print_source_pagerank_checks(df: pd.DataFrame, topn: int = 10) -> None:
     subsection("Source / page_rank consistency")
-    src = df["source"].astype("string")
+
+    src = as_str_series(df["source"])
     pr = pd.to_numeric(df["page_rank"], errors="coerce")
 
     print(f"Sources: {fmt_int(int(src.nunique(dropna=True)))} unique")
+
     vc = src.value_counts(dropna=False).head(topn)
     out = pd.DataFrame({"source": vc.index.astype(str), "count": vc.values})
-    out["%"] = out["count"] / len(df)
+    out["%"] = out["count"] / max(1, len(df))
     print("\nTop sources:")
     print(out.to_string(index=False, formatters={"%": fmt_pct}))
 
@@ -445,6 +479,7 @@ def print_source_pagerank_checks(df: pd.DataFrame, topn: int = 10) -> None:
 
 def print_label_summary(df: pd.DataFrame) -> None:
     subsection("Label distribution & imbalance indicators (development only)")
+
     y = df["label"]
     y_num = pd.to_numeric(y, errors="coerce")
     if y_num.notna().mean() > 0.95:
@@ -452,12 +487,12 @@ def print_label_summary(df: pd.DataFrame) -> None:
 
     vc = y.value_counts(dropna=False).sort_index()
     out = pd.DataFrame({"label": vc.index.astype(str), "count": vc.values})
-    out["%"] = out["count"] / len(df)
+    out["%"] = out["count"] / max(1, len(df))
     print(out.to_string(index=False, formatters={"%": fmt_pct}))
 
     K = int(y.nunique(dropna=True))
     if K > 1:
-        p = float(vc.max() / len(df))
+        p = float(vc.max() / max(1, len(df)))
         f1_major = 2.0 * p / (p + 1.0)
         macro_f1_majority = f1_major / K
         print(f"\nMajority share p: {p:.4f}")
@@ -473,7 +508,8 @@ def _percentile(s: pd.Series, q: float) -> float:
 
 def print_label_text_lengths(df: pd.DataFrame, col: str) -> None:
     subsection(f"Per-label text length stats: {col}")
-    s = df[col].astype("string").fillna("")
+
+    s = as_str_series(df[col]).fillna("")
     tmp = pd.DataFrame(
         {
             "label": df["label"],
@@ -502,7 +538,8 @@ def print_label_text_lengths(df: pd.DataFrame, col: str) -> None:
 
 def print_label_pattern_prevalence(df: pd.DataFrame, col: str) -> None:
     subsection(f"Per-label URL/HTML prevalence: {col}")
-    s = df[col].astype("string").fillna("")
+
+    s = as_str_series(df[col]).fillna("")
     tmp = pd.DataFrame(
         {
             "label": df["label"],
@@ -516,8 +553,10 @@ def print_label_pattern_prevalence(df: pd.DataFrame, col: str) -> None:
 
 def print_label_top_sources(df: pd.DataFrame, topn: int = 5) -> None:
     subsection("Top sources per label")
-    src = df["source"].astype("string").fillna("")
+
+    src = as_str_series(df["source"]).fillna("")
     tmp = pd.DataFrame({"label": df["label"], "source": src})
+
     counts = tmp.groupby(["label", "source"]).size().reset_index(name="count")
     label_counts = tmp["label"].value_counts()
     counts["label_count"] = counts["label"].map(label_counts)
@@ -528,11 +567,13 @@ def print_label_top_sources(df: pd.DataFrame, topn: int = 5) -> None:
         rows.append(g.sort_values("count", ascending=False).head(topn))
     out = pd.concat(rows, ignore_index=True) if rows else counts.head(0)
     out = out.sort_values(["label", "count"], ascending=[True, False])
+
     print(out[["label", "source", "count", "share"]].to_string(index=False, formatters={"share": fmt_pct}))
 
 
 def print_label_time_distribution(df: pd.DataFrame, max_rows: int = 60) -> None:
     subsection("Timestamp distribution by label (valid only)")
+
     ts = try_parse_datetime(df["timestamp"])
     valid = ts.notna()
     if not valid.any():
@@ -569,6 +610,8 @@ def print_label_time_distribution(df: pd.DataFrame, max_rows: int = 60) -> None:
     print(month_counts.to_string(index=False, formatters={"share": fmt_pct}))
 
 
+# Duplicate analysis 
+
 def _normalize_for_dup(s: pd.Series) -> pd.Series:
     s = s.fillna("").astype(str).str.lower()
     s = s.str.replace(r"\s+", " ", regex=True).str.strip()
@@ -576,7 +619,7 @@ def _normalize_for_dup(s: pd.Series) -> pd.Series:
     return s
 
 
-def _content_hash(df: pd.DataFrame, near_dup: bool = False) -> pd.Series:
+def content_hash(df: pd.DataFrame, near_dup: bool = False) -> pd.Series:
     if near_dup:
         title = _normalize_for_dup(df["title"])
         article = _normalize_for_dup(df["article"])
@@ -587,44 +630,14 @@ def _content_hash(df: pd.DataFrame, near_dup: bool = False) -> pd.Series:
     return stable_hash_series(combo)
 
 
-def _print_cross_label_dup_details(
-    df: pd.DataFrame, key_col: str, group_sizes: pd.DataFrame, max_examples: int = 5
-) -> None:
-    cross = group_sizes[(group_sizes["size"] > 1) & (group_sizes["nunique"] > 1)]
-    if len(cross) == 0:
-        print("Cross-label duplicate groups: 0")
-        return
-
-    print(f"Cross-label duplicate groups: {fmt_int(len(cross))}")
-    cross_rows = df[df[key_col].isin(cross.index)]
-    label_counts = df["label"].astype(str).value_counts()
-    cross_counts = cross_rows["label"].astype(str).value_counts()
-    out = pd.DataFrame(
-        {
-            "label": cross_counts.index.astype(str),
-            "cross_dup_rows": cross_counts.values,
-        }
-    )
-    out["share_of_label"] = out["cross_dup_rows"] / out["label"].map(label_counts)
-    print("\nCross-label duplicate rows by label:")
-    print(out.to_string(index=False, formatters={"share_of_label": fmt_pct}))
-
-    print("\nExamples (cross-label duplicates):")
-    for key in cross.sort_values("size", ascending=False).head(max_examples).index.tolist():
-        grp = df[df[key_col] == key]
-        labels = grp["label"].astype(str).value_counts().to_dict()
-        title = shorten(grp["title"].iloc[0])
-        print(f"  - labels={labels} | title='{title}'")
-
-
 def print_label_duplicate_checks(df: pd.DataFrame, near_dup: bool = False) -> None:
     subsection("Label-conditional duplicate checks")
-    key_col = "content_hash"
-    tmp = df[["label", "title", "article"]].copy()
-    tmp[key_col] = _content_hash(tmp, near_dup=near_dup)
 
-    group_sizes = tmp.groupby(key_col)["label"].agg(nunique="nunique", size="size")
-    dup_groups = group_sizes[group_sizes["size"] > 1]
+    tmp = df[["label", "title", "article"]].copy()
+    tmp["content_hash"] = content_hash(tmp, near_dup=near_dup)
+
+    group_stats = tmp.groupby("content_hash")["label"].agg(nunique="nunique", size="size")
+    dup_groups = group_stats[group_stats["size"] > 1]
     same_label = dup_groups[dup_groups["nunique"] == 1]
     cross_label = dup_groups[dup_groups["nunique"] > 1]
 
@@ -636,15 +649,36 @@ def print_label_duplicate_checks(df: pd.DataFrame, near_dup: bool = False) -> No
         dup_rows = int(dup_groups["size"].sum())
         same_rows = int(same_label["size"].sum())
         cross_rows = int(cross_label["size"].sum())
-        print(f"Duplicate rows (total): {fmt_int(dup_rows)} ({fmt_pct(dup_rows / len(df))})")
-        print(f"  - same-label rows: {fmt_int(same_rows)} ({fmt_pct(same_rows / len(df))})")
-        print(f"  - cross-label rows: {fmt_int(cross_rows)} ({fmt_pct(cross_rows / len(df))})")
+        print(f"Duplicate rows (total): {fmt_int(dup_rows)} ({fmt_pct(dup_rows / max(1, len(df)))})")
+        print(f"  - same-label rows: {fmt_int(same_rows)} ({fmt_pct(same_rows / max(1, len(df)))})")
+        print(f"  - cross-label rows: {fmt_int(cross_rows)} ({fmt_pct(cross_rows / max(1, len(df)))})")
 
-    _print_cross_label_dup_details(tmp, key_col, group_sizes)
+    if len(cross_label) == 0:
+        print("Cross-label duplicate groups: 0")
+    else:
+        print(f"Cross-label duplicate groups: {fmt_int(len(cross_label))}")
+
+        cross_rows = tmp[tmp["content_hash"].isin(cross_label.index)]
+        label_counts = tmp["label"].astype(str).value_counts()
+        cross_counts = cross_rows["label"].astype(str).value_counts()
+
+        out = pd.DataFrame({"label": cross_counts.index.astype(str), "cross_dup_rows": cross_counts.values})
+        out["share_of_label"] = out["cross_dup_rows"] / out["label"].map(label_counts)
+        print("\nCross-label duplicate rows by label:")
+        print(out.to_string(index=False, formatters={"share_of_label": fmt_pct}))
+
+        print("\nExamples (cross-label duplicates):")
+        for key in cross_label.sort_values("size", ascending=False).head(5).index.tolist():
+            grp = tmp[tmp["content_hash"] == key]
+            labels = grp["label"].astype(str).value_counts().to_dict()
+            title = shorten(grp["title"].iloc[0])
+            print(f"  - labels={labels} | title='{title}'")
 
     if not near_dup:
         print("\nTip: use --near-dup to run a normalized duplicate check (lowercase + punctuation strip).")
 
+
+# Optional: OOF diagnostics 
 
 def _first_existing(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     for c in candidates:
@@ -656,20 +690,23 @@ def _first_existing(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
 def _find_score_columns(df: pd.DataFrame, score_prefix: Optional[str]) -> Tuple[Dict[str, str], Optional[str]]:
     prefixes = [score_prefix] if score_prefix else ["score_", "prob_", "logit_"]
     for prefix in prefixes:
-        if prefix is None:
+        if not prefix:
             continue
         cols = [c for c in df.columns if c.startswith(prefix)]
         if cols:
-            return {c[len(prefix) :]: c for c in cols}, prefix
+            return {c[len(prefix):]: c for c in cols}, prefix
     return {}, None
 
 
 def print_oof_pred_counts(df: pd.DataFrame, label_col: str, pred_col: str) -> None:
     subsection("Out-of-fold predicted vs true class counts")
+
     y_true = df[label_col].astype(str)
     y_pred = df[pred_col].astype(str)
+
     true_counts = y_true.value_counts().sort_index()
     pred_counts = y_pred.value_counts().reindex(true_counts.index, fill_value=0)
+
     out = pd.DataFrame(
         {
             "label": true_counts.index.astype(str),
@@ -681,6 +718,7 @@ def print_oof_pred_counts(df: pd.DataFrame, label_col: str, pred_col: str) -> No
     out["true_%"] = out["true_count"] / out["true_count"].sum()
     out["pred_%"] = out["pred_count"] / out["pred_count"].sum()
     out = out.sort_values("label")
+
     print(
         out.to_string(
             index=False,
@@ -696,11 +734,11 @@ def print_oof_pred_counts(df: pd.DataFrame, label_col: str, pred_col: str) -> No
 def _best_f1_from_pr(precision: np.ndarray, recall: np.ndarray, thresholds: np.ndarray) -> Tuple[float, float]:
     if len(thresholds) == 0:
         return float("nan"), float("nan")
-    f1_scores = 2.0 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
-    if np.all(np.isnan(f1_scores)):
+    f1 = 2.0 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
+    if np.all(np.isnan(f1)):
         return float("nan"), float("nan")
-    best_idx = int(np.nanargmax(f1_scores))
-    return float(f1_scores[best_idx]), float(thresholds[best_idx])
+    i = int(np.nanargmax(f1))
+    return float(f1[i]), float(thresholds[i])
 
 
 def print_pr_curves(
@@ -712,6 +750,7 @@ def print_pr_curves(
     make_plots: bool,
 ) -> List[str]:
     subsection("One-vs-rest PR curves (requires score columns)")
+
     y_true = df[label_col].astype(str)
     y_pred = df[pred_col].astype(str)
     labels = sorted(y_true.unique().tolist())
@@ -722,19 +761,23 @@ def print_pr_curves(
         return []
 
     report = classification_report(y_true, y_pred, labels=labels, output_dict=True, zero_division=0)
+
     rows = []
     for lab in labels_with_scores:
         scores = pd.to_numeric(df[score_cols[lab]], errors="coerce").to_numpy()
         valid = ~np.isnan(scores)
         if valid.sum() == 0:
             continue
+
         y_bin = (y_true == lab).astype(int).to_numpy()
         if y_bin[valid].sum() == 0 or y_bin[valid].sum() == valid.sum():
             print(f"[WARN] label {lab} has only one class in y_true; skipping PR curve.")
             continue
+
         precision, recall, thresholds = precision_recall_curve(y_bin[valid], scores[valid])
         ap = average_precision_score(y_bin[valid], scores[valid])
         best_f1, best_thr = _best_f1_from_pr(precision, recall, thresholds)
+
         rows.append(
             {
                 "label": lab,
@@ -759,6 +802,7 @@ def print_pr_curves(
     if len(out) == 0:
         print("No valid score rows; skipping PR curve summary.")
         return []
+
     out[["ap", "f1_pred", "best_f1"]] = out[["ap", "f1_pred", "best_f1"]].round(4)
     out["best_thr"] = out["best_thr"].round(6)
     print(out.to_string(index=False))
@@ -774,6 +818,7 @@ def plot_score_distributions(
     make_plots: bool,
 ) -> None:
     subsection("Score separation for weak classes (requires score columns)")
+
     if not weak_labels:
         print("No weak labels provided; skipping score distributions.")
         return
@@ -786,15 +831,18 @@ def plot_score_distributions(
         if lab not in score_cols:
             print(f"[WARN] Missing score column for label {lab}; skipping.")
             continue
+
         scores = pd.to_numeric(df[score_cols[lab]], errors="coerce")
         valid = scores.notna()
         scores = scores[valid]
         y_bin = y_true[valid] == lab
+
         pos = scores[y_bin]
         neg = scores[~y_bin]
         if len(pos) == 0 or len(neg) == 0:
             print(f"[WARN] label {lab} has empty pos/neg scores; skipping.")
             continue
+
         print(
             f"Label {lab}: pos_mean={pos.mean():.4f} neg_mean={neg.mean():.4f} "
             f"pos_p90={np.percentile(pos, 90):.4f} neg_p90={np.percentile(neg, 90):.4f}"
@@ -822,7 +870,9 @@ def run_oof_diagnostics(
 ) -> None:
     if not oof_path.exists():
         raise FileNotFoundError(f"Missing: {oof_path}")
+
     df = pd.read_csv(oof_path)
+
     label_col = _first_existing(df, ["label", "true", "y_true", "gold"])
     pred_col = _first_existing(df, ["pred", "y_pred", "prediction"])
     if label_col is None or pred_col is None:
@@ -839,20 +889,26 @@ def run_oof_diagnostics(
     else:
         print("No score columns detected (prefix: score_, prob_, logit_).")
 
-    if score_cols:
-        labels_order = print_pr_curves(df, label_col, pred_col, score_cols, output_dir, make_plots)
-        if labels_order:
-            report = classification_report(
-                df[label_col].astype(str),
-                df[pred_col].astype(str),
-                labels=labels_order,
-                output_dict=True,
-                zero_division=0,
-            )
-            f1_by_label = {lab: report.get(lab, {}).get("f1-score", 0.0) for lab in labels_order}
-            weak_labels = [k for k, _ in sorted(f1_by_label.items(), key=lambda x: x[1])][: max(1, weak_k)]
-            plot_score_distributions(df, label_col, score_cols, weak_labels, output_dir, make_plots)
+    if not score_cols:
+        return
 
+    labels_order = print_pr_curves(df, label_col, pred_col, score_cols, output_dir, make_plots)
+    if not labels_order:
+        return
+
+    report = classification_report(
+        df[label_col].astype(str),
+        df[pred_col].astype(str),
+        labels=labels_order,
+        output_dict=True,
+        zero_division=0,
+    )
+    f1_by_label = {lab: report.get(lab, {}).get("f1-score", 0.0) for lab in labels_order}
+    weak_labels = [k for k, _ in sorted(f1_by_label.items(), key=lambda x: x[1])][: max(1, int(weak_k))]
+    plot_score_distributions(df, label_col, score_cols, weak_labels, output_dir, make_plots)
+
+
+# Cross-split checks (dev vs eval) + drift metric
 
 def jensen_shannon(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
     p = np.asarray(p, dtype=float) + eps
@@ -879,23 +935,23 @@ def compare_splits(dev: pd.DataFrame, eva: pd.DataFrame) -> None:
     print(f"Only in evaluation:  {only_eva}")
 
     subsection("ID overlap")
-    a = set(dev["Id"].dropna().astype(int).tolist())
-    b = set(eva["Id"].dropna().astype(int).tolist())
-    inter = a.intersection(b)
+    a = pd.to_numeric(dev["Id"], errors="coerce").dropna().astype(int)
+    b = pd.to_numeric(eva["Id"], errors="coerce").dropna().astype(int)
+    inter = set(a.tolist()).intersection(set(b.tolist()))
     print(f"Overlapping IDs: {fmt_int(len(inter))}")
     if len(inter) > 0:
         print("[WARN] There should usually be no ID overlap between splits. Investigate data leakage risk.")
 
     subsection("Source overlap & unseen sources")
-    src_dev = set([s.strip() for s in dev["source"].dropna().astype(str).tolist()])
-    src_eva = set([s.strip() for s in eva["source"].dropna().astype(str).tolist()])
+    src_dev = set(as_str_series(dev["source"]).dropna().astype(str).map(str.strip).tolist())
+    src_eva = set(as_str_series(eva["source"]).dropna().astype(str).map(str.strip).tolist())
     unseen = src_eva - src_dev
     print(f"Dev sources: {fmt_int(len(src_dev))}")
     print(f"Eval sources: {fmt_int(len(src_eva))}")
     print(f"Eval sources unseen in dev: {fmt_int(len(unseen))} ({fmt_pct(len(unseen)/max(1,len(src_eva)))})")
-    if len(unseen) > 0:
+    if unseen:
         print("Examples of unseen eval sources:")
-        for s in sorted(list(unseen))[:15]:
+        for s in sorted(unseen)[:15]:
             print(f"  - {s}")
 
     subsection("Drift diagnostics (Jensen–Shannon divergence)")
@@ -904,8 +960,8 @@ def compare_splits(dev: pd.DataFrame, eva: pd.DataFrame) -> None:
     d1 = pd.to_numeric(dev["page_rank"], errors="coerce").dropna()
     d2 = pd.to_numeric(eva["page_rank"], errors="coerce").dropna()
     bins = sorted(set(d1.unique()).union(set(d2.unique())))
-    p = np.array([(d1 == b).mean() for b in bins])
-    q = np.array([(d2 == b).mean() for b in bins])
+    p = np.array([(d1 == b).mean() for b in bins]) if bins else np.array([1.0])
+    q = np.array([(d2 == b).mean() for b in bins]) if bins else np.array([1.0])
     drift_rows.append({"feature": "page_rank (categorical)", "JS_div": jensen_shannon(p, q)})
 
     t1 = try_parse_datetime(dev["timestamp"]).dropna()
@@ -919,8 +975,8 @@ def compare_splits(dev: pd.DataFrame, eva: pd.DataFrame) -> None:
         drift_rows.append({"feature": "timestamp.year (valid only)", "JS_div": jensen_shannon(p, q)})
 
     for c in ["title", "article"]:
-        w1 = dev[c].astype("string").fillna("").str.split().str.len()
-        w2 = eva[c].astype("string").fillna("").str.split().str.len()
+        w1 = as_str_series(dev[c]).fillna("").str.split().str.len()
+        w2 = as_str_series(eva[c]).fillna("").str.split().str.len()
         bins = [0, 5, 10, 20, 40, 80, 160, 320, 10_000]
         p = np.histogram(w1, bins=bins, density=True)[0]
         q = np.histogram(w2, bins=bins, density=True)[0]
@@ -941,6 +997,8 @@ def compare_splits(dev: pd.DataFrame, eva: pd.DataFrame) -> None:
                 "This can inflate validation if not handled carefully (dedup/group split)."
             )
 
+
+# Plot saving
 
 def save_plots(dev: pd.DataFrame, eva: pd.DataFrame, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -978,11 +1036,11 @@ def save_plots(dev: pd.DataFrame, eva: pd.DataFrame, out_dir: Path) -> None:
 
     save_bar(dev["label"].value_counts().sort_index(), "Development: label distribution", "dev_label_dist.png")
 
-    for c in ["title", "article"]:
-        w = dev[c].astype("string").fillna("").str.split().str.len()
+    for c in TEXT_COLS:
+        w = as_str_series(dev[c]).fillna("").str.split().str.len()
         save_hist(w.rename(f"{c}_words"), f"Development: {c} word length", f"dev_{c}_wordlen.png", bins=60)
 
-        w = eva[c].astype("string").fillna("").str.split().str.len()
+        w = as_str_series(eva[c]).fillna("").str.split().str.len()
         save_hist(w.rename(f"{c}_words"), f"Evaluation: {c} word length", f"eval_{c}_wordlen.png", bins=60)
 
     t = try_parse_datetime(dev["timestamp"]).dropna()
@@ -995,6 +1053,47 @@ def save_plots(dev: pd.DataFrame, eva: pd.DataFrame, out_dir: Path) -> None:
 
     print(f"[OK] Saved plots to: {out_dir}")
 
+
+# Heuristics (gotchas)
+
+def print_gotchas(df: pd.DataFrame) -> None:
+    subsection("Potential gotchas detected (heuristics)")
+
+    gotchas: List[str] = []
+
+    placeholder_share = as_str_series(df["timestamp"]).fillna("").eq("0000-00-00 00:00:00").mean()
+    if placeholder_share > 0.01:
+        gotchas.append(
+            f"timestamp contains placeholder '0000-00-00 00:00:00' in {fmt_pct(placeholder_share)} of rows "
+            "(treat as missing; avoid misleading time features)."
+        )
+
+    for c in TEXT_COLS:
+        s = as_str_series(df[c]).fillna("")
+        html = s.str.contains(r"<[^>]+>", regex=True).mean()
+        url = s.str.contains(r"https?://|www\.", regex=True).mean()
+        if html > 0.05:
+            gotchas.append(f"{c} contains HTML-like tags in {fmt_pct(html)} of rows (consider cleaning).")
+        if url > 0.05:
+            gotchas.append(f"{c} contains URLs in {fmt_pct(url)} of rows (consider stripping or normalizing).")
+
+    grp = df[["source", "page_rank"]].copy()
+    grp["page_rank"] = pd.to_numeric(grp["page_rank"], errors="coerce")
+    nun = grp.dropna().groupby("source")["page_rank"].nunique()
+    if (nun > 1).mean() > 0.001:
+        gotchas.append(
+            "page_rank is mostly constant per source (feature may act as a proxy for source; "
+            "beware of overfitting to publishers)."
+        )
+
+    if gotchas:
+        for g in gotchas:
+            print(f"  - {g}")
+    else:
+        print("  - No obvious gotchas flagged by heuristics (still inspect manually).")
+
+
+# Repo utilities / CLI
 
 def find_repo_root(start: Path) -> Optional[Path]:
     for p in [start] + list(start.parents):
@@ -1017,6 +1116,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weak-k", type=int, default=2, help="How many weak labels to analyze with score plots.")
     return parser.parse_args()
 
+
+# Main runner
 
 def run_eda(
     repo_root: Path,
@@ -1051,7 +1152,7 @@ def run_eda(
     dev_prof = infer_profile("development", dev_path, dev)
     eva_prof = infer_profile("evaluation", eva_path, eva)
 
-    # --- Development report (with labels) ---
+    # --- DEVELOPMENT ---
     section("EDA report: DEVELOPMENT")
     print_basic_info(dev, dev_prof)
     print_missingness(dev)
@@ -1083,42 +1184,9 @@ def run_eda(
     print_label_top_sources(dev, topn=min(5, max_cats))
     print_label_time_distribution(dev, max_rows=max_time_rows)
     print_label_duplicate_checks(dev, near_dup=near_dup)
+    print_gotchas(dev)
 
-    subsection("Potential gotchas detected (heuristics)")
-    gotchas = []
-
-    placeholder_share = dev["timestamp"].astype(str).eq("0000-00-00 00:00:00").mean()
-    if placeholder_share > 0.01:
-        gotchas.append(
-            f"timestamp contains placeholder '0000-00-00 00:00:00' in {fmt_pct(placeholder_share)} of rows "
-            "(treat as missing; avoid misleading time features)."
-        )
-
-    for c in ["article", "title"]:
-        s = dev[c].astype("string").fillna("")
-        html = s.str.contains(r"<[^>]+>", regex=True).mean()
-        url = s.str.contains(r"https?://|www\.", regex=True).mean()
-        if html > 0.05:
-            gotchas.append(f"{c} contains HTML-like tags in {fmt_pct(html)} of rows (consider cleaning).")
-        if url > 0.05:
-            gotchas.append(f"{c} contains URLs in {fmt_pct(url)} of rows (consider stripping or normalizing).")
-
-    grp = dev[["source", "page_rank"]].copy()
-    grp["page_rank"] = pd.to_numeric(grp["page_rank"], errors="coerce")
-    nun = grp.dropna().groupby("source")["page_rank"].nunique()
-    if (nun > 1).mean() > 0.001:
-        gotchas.append(
-            "page_rank is mostly constant per source (feature may act as a proxy for source; "
-            "beware of overfitting to publishers)."
-        )
-
-    if gotchas:
-        for g in gotchas:
-            print(f"  - {g}")
-    else:
-        print("  - No obvious gotchas flagged by heuristics (still inspect manually).")
-
-    # --- Evaluation report (no labels) ---
+    # --- EVALUATION ---
     section("EDA report: EVALUATION")
     print_basic_info(eva, eva_prof)
     print_missingness(eva)
@@ -1138,42 +1206,9 @@ def run_eda(
     print_text_summary(eva, "article", sample_k=text_sample, seed=seed)
 
     print_source_pagerank_checks(eva, topn=max_cats)
+    print_gotchas(eva)
 
-    subsection("Potential gotchas detected (heuristics)")
-    gotchas = []
-
-    placeholder_share = eva["timestamp"].astype(str).eq("0000-00-00 00:00:00").mean()
-    if placeholder_share > 0.01:
-        gotchas.append(
-            f"timestamp contains placeholder '0000-00-00 00:00:00' in {fmt_pct(placeholder_share)} of rows "
-            "(treat as missing; avoid misleading time features)."
-        )
-
-    for c in ["article", "title"]:
-        s = eva[c].astype("string").fillna("")
-        html = s.str.contains(r"<[^>]+>", regex=True).mean()
-        url = s.str.contains(r"https?://|www\.", regex=True).mean()
-        if html > 0.05:
-            gotchas.append(f"{c} contains HTML-like tags in {fmt_pct(html)} of rows (consider cleaning).")
-        if url > 0.05:
-            gotchas.append(f"{c} contains URLs in {fmt_pct(url)} of rows (consider stripping or normalizing).")
-
-    grp = eva[["source", "page_rank"]].copy()
-    grp["page_rank"] = pd.to_numeric(grp["page_rank"], errors="coerce")
-    nun = grp.dropna().groupby("source")["page_rank"].nunique()
-    if (nun > 1).mean() > 0.001:
-        gotchas.append(
-            "page_rank is mostly constant per source (feature may act as a proxy for source; "
-            "beware of overfitting to publishers)."
-        )
-
-    if gotchas:
-        for g in gotchas:
-            print(f"  - {g}")
-    else:
-        print("  - No obvious gotchas flagged by heuristics (still inspect manually).")
-
-    # Cross-split checks + plots
+    # Cross-split checks + optional plots
     compare_splits(dev, eva)
 
     if oof_preds:
