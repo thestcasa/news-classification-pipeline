@@ -13,7 +13,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import f1_score, classification_report, confusion_matrix
-
+import pickle
 
 REPO_ROOT = Path(__file__).resolve().parent
 SRC_DIR = REPO_ROOT / "src"
