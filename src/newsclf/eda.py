@@ -1,25 +1,3 @@
-#!/usr/bin/env python3
-"""
-Standalone EDA for the DS/ML Lab News Classification project.
-
-Fixed input files (repo-relative):
-  - data/raw/development.csv
-  - data/raw/evaluation.csv
-
-Fixed schemas (no column robustness):
-  development.csv columns:
-    ["Id","source","title","article","page_rank","timestamp","label"]
-  evaluation.csv columns:
-    ["Id","source","title","article","page_rank","timestamp"]
-
-Usage:
-  python src/eda.py
-  python src/eda.py --plots
-  python src/eda.py --output-dir reports/eda --plots
-  python src/eda.py --oof-preds reports/cv/oof_preds.csv --plots
-  python src/eda.py --near-dup --max-time-rows 80
-"""
-
 from __future__ import annotations
 
 import argparse

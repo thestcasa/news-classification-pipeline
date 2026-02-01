@@ -1,11 +1,9 @@
 from __future__ import annotations
-
 import numpy as np
 import pandas as pd
 import html as _html
 import unicodedata
 import re
-
 from sklearn.base import BaseEstimator, TransformerMixin
 
 _RE_TAGS = re.compile(r"<[^>]+>")
@@ -34,15 +32,6 @@ def _parse_timestamp(raw: pd.Series) -> pd.Series:
     return pd.to_datetime(raw, errors="coerce", utc=True)
 
 class TextCleaner(BaseEstimator, TransformerMixin):
-    """
-    Lightweight normalization for noisy news feeds:
-      - HTML entity unescape (e.g., &#39;, &quot;)
-      - strip HTML tags
-      - replace URLs with a placeholder token
-      - unicode normalization + whitespace cleanup
-    Keeps content words intact (good for TF-IDF + linear models).
-    """
-
     def __init__(self, url_token: str = " __URL__ "):
         self.url_token = url_token
 
@@ -54,16 +43,14 @@ class TextCleaner(BaseEstimator, TransformerMixin):
             return ""
         s = str(s)
         s = _html.unescape(s)
-        s = _RE_TAGS.sub(" ", s)                 # strip HTML tags
+        s = _RE_TAGS.sub(" ", s)                 
         s = _RE_URL.sub(self.url_token, s)
         s = unicodedata.normalize("NFKC", s)
-        # drop non-printing chars (keep whitespace/punct)
         s = "".join(ch if (ch.isprintable() or ch.isspace()) else " " for ch in s)
         s = _RE_WS.sub(" ", s).strip()
         return s
     
     def transform(self, X):
-        # X is expected to be an array-like of strings (output of TextJoiner)
         ser = pd.Series(X, dtype="object")
         return ser.map(self._clean_one).to_numpy(dtype=object)
 
@@ -251,11 +238,6 @@ class NumericColumn(BaseEstimator, TransformerMixin):
         return v.reshape(-1, 1)
 
 class TimestampFeatures(BaseEstimator, TransformerMixin):
-    """
-    Extract simple, robust datetime features:
-    - year, month, dayofweek, hour
-    - plus cyclic encodings for hour and dayofweek (helps linear models)
-    """
     def __init__(self, col: str = "timestamp", include_missing: bool = True):
         self.col = col
         self.include_missing = include_missing

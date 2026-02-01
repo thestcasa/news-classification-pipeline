@@ -1,6 +1,4 @@
 from __future__ import annotations
-# main.py  (place this at your REPO ROOT so you can run:  python main.py ...)
-
 import argparse
 import json
 import os
@@ -10,15 +8,13 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import f1_score, classification_report, confusion_matrix
 
-# --- make `src/` importable so this works both locally and on Colab with `python main.py`
+
 REPO_ROOT = Path(__file__).resolve().parent
 SRC_DIR = REPO_ROOT / "src"
 if SRC_DIR.exists():
@@ -93,7 +89,6 @@ def run_cv(
 
     df_dev = read_development(cfg.paths.dev_csv)
 
-    # ---- detect leakage in dev set (report only; do not remove) ----
     eval_df = read_evaluation(cfg.paths.eval_csv)
     df_dev, leak_report = drop_dev_rows_overlapping_eval(
         df_dev,
@@ -195,11 +190,10 @@ def run_cv(
 
         debug_pre = os.getenv("NEWSCLF_DEBUG_PRE", "0") == "1"
         t = perf_counter()
-        pipe.fit(X_tr, y_tr)  # Pipeline(verbose=True) will print step timings if enabled in your build_pipeline
+        pipe.fit(X_tr, y_tr)  
         print(f"[debug] pipe.fit: {perf_counter()-t:.2f}s")
         pre = pipe.named_steps["pre"]
         if debug_pre:
-            # DEBUG: timing + feature matrix stats
             t = perf_counter()
             Xtr = pre.transform(X_tr)
             print(f"[debug] pre.transform(train): {perf_counter()-t:.2f}s")
@@ -253,7 +247,6 @@ def run_cv(
 
         print(f"[cv][fold {fold}/{cfg.cv.k}] macro_f1={macro:.5f}  fold_time={fold_rows[-1]['seconds']:.1f}s", flush=True)
 
-    # --- Save tables (ensure output dir exists)
     _ensure_dir(out_dir)
     folds_df = pd.DataFrame(fold_rows).sort_values("fold")
     folds_df.to_csv(out_dir / "folds.csv", index=False)
@@ -270,7 +263,6 @@ def run_cv(
     cm_df.columns.name = "pred"
     cm_df.to_csv(out_dir / "confusion_matrix.csv")
 
-    # --- OOF true vs predicted counts (across all folds)
     if y_true_all:
         y_true_cat = np.concatenate(y_true_all)
         y_pred_cat = np.concatenate(y_pred_all)
@@ -288,7 +280,6 @@ def run_cv(
         print("\n[cv] OOF true vs predicted counts:")
         print(counts_df.to_string(index=False))
 
-    # --- Summary
     summary = {
         "stage": "cv",
         "k": cfg.cv.k,
@@ -301,7 +292,6 @@ def run_cv(
     }
     _save_json(summary, out_dir / "cv_summary.json")
 
-    # --- Plots (saved to disk)
     plot_folds_macro(out_dir / "folds.csv", out_dir / "folds_macro_f1.png")
     plot_per_class_f1(out_dir / "per_class_mean.csv", out_dir / "per_class_f1.png")
     plot_confusion_matrix(out_dir / "confusion_matrix.csv", out_dir / "confusion_matrix.png")
@@ -323,10 +313,8 @@ def train_and_test(
 
     _ensure_dir(out_dir)
 
-    # --- Train final model
     df_dev = read_development(cfg.paths.dev_csv)
 
-    # ---- detect leakage in dev set (report only; do not remove) ----
     df_eval = read_evaluation(cfg.paths.eval_csv)
     df_dev, leak_report = drop_dev_rows_overlapping_eval(
         df_dev,
@@ -339,7 +327,6 @@ def train_and_test(
     print("[leakage]", leak_report)
     df_dev, dup_report = drop_cross_label_duplicates(df_dev, on=("title", "article"))
     print("[dedup]", dup_report)
-    # -------------------------------------------------
 
     X_dev = df_dev.drop(columns=["label"])
     y_dev = df_dev["label"].astype(int).to_numpy()
@@ -386,26 +373,22 @@ def train_and_test(
     train_seconds = float(time.perf_counter() - tr_t0)
     print(f"[test] training done. train_time={train_seconds:.1f}s", flush=True)
 
-    # Save model
-    import pickle
+ 
     model_path = out_dir / "model.pkl"
     with open(model_path, "wb") as f:
         pickle.dump(pipe, f)
     print(f"[test] saved model to: {model_path}")
 
-    # --- Predict evaluation set (no labels by definition)  :contentReference[oaicite:0]{index=0}
     print(f"[test] predicting evaluation.csv (n={len(df_eval):,})...", flush=True)
     pr_t0 = time.perf_counter()
     pred = pipe.predict(df_eval)
     pred_seconds = float(time.perf_counter() - pr_t0)
     print(f"[test] prediction done. predict_time={pred_seconds:.1f}s", flush=True)
 
-    # Save submission (format required by assignment) :contentReference[oaicite:1]{index=1}
     sub_path = out_dir / "submission.csv"
     write_submission(df_eval["id"], pred, sub_path)
     print(f"[test] saved submission to: {sub_path}")
 
-    # Save prediction distribution (useful sanity-check plot)
     counts = pd.Series(pred.astype(int)).value_counts().sort_index()
     counts_df = pd.DataFrame({"label": counts.index.astype(int), "count": counts.values})
     counts_df.to_csv(out_dir / "pred_label_counts.csv", index=False)
@@ -459,23 +442,18 @@ def main():
     print(f"[main] dev_csv={cfg.paths.dev_csv}")
     print(f"[main] eval_csv={cfg.paths.eval_csv}")
 
-    # Output dirs:
-    # - If --run_dir is set, we create:
-    #     <run_dir>/evaluation   and   <run_dir>/testing
-    # - Otherwise we honor cfg.paths.cv_out_dir and cfg.paths.submission_out parent (plus cfg.paths.model_out parent if different).
+
     if args.run_dir:
         run_root = Path(args.run_dir)
         eval_dir = run_root / "evaluation"
         test_dir = run_root / "testing"
     else:
         eval_dir = Path(cfg.paths.cv_out_dir)
-        # testing outputs live together
         test_dir = Path(cfg.paths.submission_out).resolve().parent
 
     _ensure_dir(eval_dir)
     _ensure_dir(test_dir)
 
-    # Save config + overrides into both folders (as requested)
     cfg_dict = asdict(cfg)
     cfg_dict["_meta"] = {
         "config_path": str(Path(args.config).resolve()),
@@ -487,7 +465,6 @@ def main():
     _copy_if_exists(Path(args.config), eval_dir / "config_original.json")
     _copy_if_exists(Path(args.config), test_dir / "config_original.json")
 
-    # Optional cache directory (shared across stages if provided)
     cache_dir = args.cache_dir
     if cache_dir:
         _ensure_dir(Path(cache_dir))

@@ -16,10 +16,6 @@ _RE_URL = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
 _RE_WS = re.compile(r"\s+")
 
 def _standardize(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normalize column names and standardize Id -> id.
-    Keeps everything else unchanged.
-    """
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -60,17 +56,6 @@ def _canon_text_series(
     strip_accents: bool = True,
     placeholders: tuple[str, ...] = ("\\N",),
 ) -> pd.Series:
-    """
-    Canonicalize text in a way that matches your modeling pipeline reasonably well:
-      - treat placeholders (e.g. \\N) as missing
-      - HTML unescape
-      - strip HTML tags
-      - replace URLs with token
-      - NFKC normalize
-      - collapse whitespace
-      - casefold (optional)
-      - strip accents (optional, consistent with TfidfVectorizer(strip_accents="unicode"))
-    """
     s = s.astype("string").fillna("")
     s = s.where(~s.str.strip().isin(placeholders), "")
 
@@ -109,14 +94,6 @@ def drop_dev_rows_overlapping_eval(
     placeholders: tuple[str, ...] = ("\\N",),
     drop: bool = True,
 ) -> tuple[pd.DataFrame, dict]:
-    """
-    Remove from development ALL rows whose (on[0], on[1]) pair appears >=1 time in evaluation.
-    Equality is checked after canonicalization (see _canon_text_series).
-
-    If drop=False, keep all dev rows and only report the overlap.
-
-    Returns (dev_df_or_filtered, report_dict).
-    """
     c1, c2 = on
     for c in (c1, c2):
         if c not in dev_df.columns:
@@ -177,11 +154,6 @@ def drop_cross_label_duplicates(
     placeholders: tuple[str, ...] = ("\\N",),
     drop_same_label_dups: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
-    """
-    Remove rows where the same (on[0], on[1]) content appears with multiple labels.
-    Optionally drop same-label duplicates (keep first).
-    Uses canonicalization similar to the modeling pipeline to reduce false mismatches.
-    """
     if "label" not in dev_df.columns:
         raise ValueError("dev_df must include a 'label' column for duplicate checks.")
 

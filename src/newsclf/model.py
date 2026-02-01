@@ -69,9 +69,7 @@ def build_pipeline(
     cache_dir: str | None = None,
     missing_article_token: str | None = "__MISSING_ARTICLE__",
 ):
-    
-    # PREPROCESSING
-    # text -> tfidf
+
     tfidf_union = [
         ("word", TfidfVectorizer(
             max_features=max_features,
@@ -89,10 +87,10 @@ def build_pipeline(
         tfidf_union.append(
             ("char", TfidfVectorizer(
                 analyzer=char_analyzer,
-                ngram_range=(int(char_ngram_min), int(char_ngram_max)),  # buon default
+                ngram_range=(int(char_ngram_min), int(char_ngram_max)), 
                 min_df=int(char_min_df),
                 max_df=max_df,
-                max_features=char_max,  # limita costo
+                max_features=char_max,  
                 strip_accents=strip_accents,
                 lowercase=lowercase,
                 sublinear_tf=sublinear_tf,
@@ -127,24 +125,20 @@ def build_pipeline(
             )),
         ])
 
-    # numeric -> scaler (with_mean=False keeps sparse compatibility)
     page_rank_pipe = Pipeline(steps=[
         ("num", NumericColumn("page_rank")),
         ("scaler", StandardScaler(with_mean=False)),
     ])
 
-    # timestamp -> numeric features + scaler
     time_pipe = Pipeline(steps=[
         ("time", TimestampFeatures("timestamp", include_missing=False)),
         ("scaler", StandardScaler(with_mean=False)),
     ])
 
-    # timestamp missingness -> binary
     timestamp_missing_pipe = Pipeline(steps=[
         ("missing", TimestampMissingIndicator("timestamp")),
     ])
 
-    # article missingness -> binary + scaler
     article_missing_pipe = Pipeline(steps=[
         ("missing", MissingIndicator("article", placeholders=["\\N"])),
         ("scaler", StandardScaler(with_mean=False)),
@@ -179,7 +173,6 @@ def build_pipeline(
     )
 
 
-    # CLASSIFIER
     if model_type == "logreg":
         clf = LogisticRegression(
             C=C,
@@ -198,7 +191,6 @@ def build_pipeline(
         )
 
     elif model_type == "ridge":
-        # strong/fast linear baseline for high-dimenisonal sparse text
         clf = RidgeClassifier(
             alpha=ridge_alpha,
             class_weight=class_weight,
@@ -207,7 +199,6 @@ def build_pipeline(
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
-    # memory cache should make grid-search faster (avoids recomputing transforms)
     mem = Memory(location=cache_dir, verbose=0) if cache_dir else None
 
     return Pipeline(steps=[("pre", pre), ("clf", clf)], memory=mem, verbose=True)
