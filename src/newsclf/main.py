@@ -20,20 +20,19 @@ SRC_DIR = REPO_ROOT / "src"
 if SRC_DIR.exists():
     sys.path.insert(0, str(SRC_DIR))
 
-from newsclf.config import load_config, parse_overrides  # noqa: E402
+from newsclf.config import load_config, parse_overrides 
 from newsclf.io import (
     read_development,
     read_evaluation,
     write_submission,
     drop_dev_rows_overlapping_eval,
     drop_cross_label_duplicates,
-)  # noqa: E402
-from newsclf.model import build_pipeline, compute_balanced_class_weight  # noqa: E402
-from newsclf.plots import plot_confusion_matrix, plot_folds_macro, plot_per_class_f1  # noqa: E402
+) 
+from newsclf.model import build_pipeline, compute_balanced_class_weight 
+from newsclf.plots import plot_confusion_matrix, plot_folds_macro, plot_per_class_f1  
 
 
 def _now_tag() -> str:
-    # filesystem-friendly timestamp
     return time.strftime("%Y%m%d_%H%M%S")
 
 
@@ -102,7 +101,6 @@ def run_cv(
     print("[leakage]", leak_report)
     df_dev, dup_report = drop_cross_label_duplicates(df_dev, on=("title", "article"))
     print("[dedup]", dup_report)
-    # -------------------------------------------------
 
     X = df_dev.drop(columns=["label"])
     y = df_dev["label"].astype(int).to_numpy()
