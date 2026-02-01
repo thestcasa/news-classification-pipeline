@@ -48,5 +48,8 @@
   },
   "dedup": {
     "drop_same_label": false
+  },
+  "leakage": {
+    "drop_overlap": false
   }
 }
