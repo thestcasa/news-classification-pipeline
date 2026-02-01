@@ -64,6 +64,10 @@ class Dedup:
     drop_same_label: bool = False
 
 @dataclass(frozen=True)
+class Leakage:
+    drop_overlap: bool = False
+
+@dataclass(frozen=True)
 class Config:
     paths: Paths
     cv: CV
@@ -71,6 +75,7 @@ class Config:
     model: Model
     source: Source
     dedup: Dedup
+    leakage: Leakage
 
 def _deep_update(base: dict[str, Any], upd: dict[str, Any]) -> dict[str, Any]:
     out = dict(base)
@@ -140,4 +145,5 @@ def load_config(path: str | Path, *, overrides: dict[str, Any] | None = None) ->
         ),
         source=Source(**cfg.get("source", {})),
         dedup=Dedup(**cfg.get("dedup", {})),
+        leakage=Leakage(**cfg.get("leakage", {})),
     )

@@ -95,11 +95,15 @@ def run_cv(
         on=("title", "article"),
         lowercase=True,
         strip_accents=True,
-        drop=False,
+        drop=bool(cfg.leakage.drop_overlap),
     )
 
     print("[leakage]", leak_report)
-    df_dev, dup_report = drop_cross_label_duplicates(df_dev, on=("title", "article"))
+    df_dev, dup_report = drop_cross_label_duplicates(
+            df_dev,
+            on=("title", "article"),
+            drop_same_label_dups=bool(cfg.dedup.drop_same_label),
+        )    
     print("[dedup]", dup_report)
 
     X = df_dev.drop(columns=["label"])
@@ -320,10 +324,14 @@ def train_and_test(
         on=("title", "article"),
         lowercase=True,
         strip_accents=True,
-        drop=False,
+        drop=bool(cfg.leakage.drop_overlap),
     )
     print("[leakage]", leak_report)
-    df_dev, dup_report = drop_cross_label_duplicates(df_dev, on=("title", "article"))
+    df_dev, dup_report = drop_cross_label_duplicates(
+            df_dev,
+            on=("title", "article"),
+            drop_same_label_dups=bool(cfg.dedup.drop_same_label),
+        )    
     print("[dedup]", dup_report)
 
     X_dev = df_dev.drop(columns=["label"])
